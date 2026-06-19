@@ -8,7 +8,7 @@ from .login import login_error, login
 from .service import webvpn_login, jwb_login, jwb_cjd_login, ibit_login, yanhekt_login, library_login, jxzxehall_login, dekt_login, cxcy_login
 from .services import jwb,jxzxehall
 
-__version__ = "3.4.1"
+__version__ = "3.4.2"
 __author__ = "Teclab"
 __email__ = "admin@teclab.org.cn"
 __description__ = "北京理工大学统一身份认证登录库"

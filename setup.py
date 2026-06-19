@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="bit_login", 
-    version="3.4.1",
+    version="3.4.2",
     author="teclab",   
     author_email="admin@teclab.org.cn",
     description="北京理工大学统一身份验证登录模块",
