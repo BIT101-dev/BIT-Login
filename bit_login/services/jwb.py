@@ -1,6 +1,8 @@
 from bs4 import BeautifulSoup
 from ..config import CONFIG
 from datetime import datetime
+from urllib.parse import urlparse
+
 
 def get_current_kksj():
     now = datetime.now()
@@ -17,6 +19,26 @@ def get_current_kksj():
 class score:
     def __init__(self,session):
         self.session = session
+        
+    def _score_list_url(self):
+        return f'{CONFIG["urls"]["active"]["jwb_cb"]}jsxsd/kscj/cjcx_list'
+
+    def _score_request_headers(self):
+        parsed = urlparse(CONFIG["urls"]["active"]["jwb_cb"])
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        return {
+            "Origin": origin,
+        }
+    
+    def _post_score_list(self, data):
+        response = self.session.post(
+            self._score_list_url(),
+            data=data,
+            headers=self._score_request_headers(),
+        )
+        if response.status_code >= 500:
+            raise Exception(f"成绩列表获取失败: HTTP {response.status_code}")
+        return response
 
     def get_score(self,kksj=None,detailed=False):
         if kksj==None: kksj = get_current_kksj()
@@ -26,7 +48,7 @@ class score:
             'kcmc': '',
             'xsfs': 'all',
         }
-        response = self.session.post(f'{CONFIG["urls"]["active"]["jwb_cb"]}jsxsd/kscj/cjcx_list', data=data)
+        response = self._post_score_list(data)
         res = self.parse_score(response.text,detailed=detailed)
         return res
     
@@ -50,7 +72,7 @@ class score:
                 'course':data[3].string,
                 'score':data[4].string,
                 'credit':data[6].string,
-                'hours':data[5].string,
+                'hours':data[7].string,
                 'kksj':data[1].string, 
                 'type':data[11].string,
             }
@@ -123,7 +145,7 @@ class score:
             'kcmc': '',
             'xsfs': 'all',
         }
-        response = self.session.post(f'{CONFIG["urls"]["active"]["jwb_cb"]}jsxsd/kscj/cjcx_list', data=data)
+        response = self._post_score_list(data)
         return self.parse_bit101_score(response.text, detailed=detailed)
 
     def parse_bit101_score(self, data, detailed=False):
@@ -204,6 +226,7 @@ class cjd:
     def get_cjd(self,gpa=True):
         require_gpa = 1 if gpa else 0
         res = self.session.get(f"https://jwb.bit.edu.cn/cjd/ScoreReport2/Index?GPA={require_gpa}").text
+        print(res)
         if "以下显示的是本次申请的成绩信息" not in res:
             raise Exception("成绩单获取失败!")
         img_url = "https://jwb.bit.edu.cn/cjd/Temp/"+res.split("<img src=\"/cjd/Temp/")[1].split('" class="img-fluid w-100" a')[0]

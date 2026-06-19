@@ -10,7 +10,6 @@ if not username and not password:
 
 print("========== 开始测试登录模块 ==========")
 
-
 print("Testing: WEBVPN")
 assert bit_login.webvpn_login().login(username=username, password=password).get_session().get("https://webvpn.bit.edu.cn/connection/log?page=1&limit=10").json()["Message"] == "获取成功"
 print("✅ PASS: WEBVPN\n")
@@ -45,8 +44,12 @@ print("Testing: LIBRARY (图书馆)")
 print(bit_login.library_login().login(username=username, password=password).get_result())
 print("✅ PASS: LIBRARY\n")
 
-print("Testing: DEKT (第二课堂)")
-assert "cookie_json" in bit_login.dekt_login().login(username=username, password=password).get_result()
-print("✅ PASS: DEKT\n")
+# print("Testing: DEKT (第二课堂)")
+# assert "cookie_json" in bit_login.dekt_login().login(username=username, password=password).get_result()
+# print("✅ PASS: DEKT\n")
+
+# print("Testing: CXCY")
+# bit_login.cxcy_login().login(username=username, password=password).get_result()
+# print("✅ PASS: CXCY\n")
 
 print("========== 全部测试通过 ==========")

@@ -1,9 +1,11 @@
 import requests
 import urllib.parse
+import os
 from .config import CONFIG
 from .utils import check_network_env,convert_to_webvpn_url
 from .login import login, login_error
 from urllib.parse import unquote
+import functools
 
 network_initialized = False
 webvpn_mode = False
@@ -80,13 +82,34 @@ class webvpn_login(BaseLogin):
 
 class jwb_login(BaseLogin):
     """教务系统"""
-    
+
+    def _request_login_step(self, label, url, headers):
+        response = self._sso_login.session.get(url, headers=headers, allow_redirects=False)
+        if response.status_code >= 500:
+            raise login_error(f"jwb: {label} 失败 HTTP {response.status_code}")
+        return response
+
     def _login(self, username, password):
         """教务系统登录逻辑"""
         res = self._sso_login.login(username, password, callback_url=CONFIG["urls"]["campus"]["jwb_cb"])
         res["callback"] = self.patch_webvpn(username,password,res["callback"])
+        self._sso_login.session.trust_env = False
         headers = CONFIG["headers"]["jwb"].copy()
-        self._sso_login.session.get(res["callback"], headers=headers)
+        headers["Referer"] = f'{CONFIG["urls"]["base"]["sso_login_ui"]}?service={urllib.parse.quote(CONFIG["urls"]["campus"]["jwb_cb"])}'
+        self._sso_login.session.headers.update(headers)
+        self._request_login_step("preflight-root", CONFIG["urls"]["active"]["jwb_cb"], headers)
+        response = self._request_login_step("callback", res["callback"], headers)
+        location = response.headers.get("Location")
+        if location:
+            response = self._request_login_step("landing", urllib.parse.urljoin(response.url, location), headers)
+        location = response.headers.get("Location")
+        if location:
+            response = self._request_login_step("login-to-xk", urllib.parse.urljoin(response.url, location), headers)
+        location = response.headers.get("Location")
+        if location:
+            response = self._request_login_step("main", urllib.parse.urljoin(response.url, location), headers)
+        if "sso.bit.edu.cn/cas/login" in response.url:
+            raise login_error("jwb: 登录回调后仍停留在统一身份认证页")
         return self._get_cookies_result()
 
 class jwb_cjd_login(BaseLogin):
@@ -217,3 +240,43 @@ class dekt_login(BaseLogin):
         data = self._sso_login.login(username, password, callback_url=CONFIG["urls"]["campus"]["dekt_cb"])
         self._sso_login.session.get(data["callback"], allow_redirects=True)
         return self._get_cookies_result()
+
+import functools
+
+class cxcy_login(BaseLogin):
+    """大创系统(直连)"""
+    def _login(self, username, password):
+        """大创系统登录逻辑"""
+        data = self._sso_login.login(username, password, callback_url=CONFIG["urls"]["campus"]["cxcy_cas"])
+        r_login = self._sso_login.session.get(data["callback"], allow_redirects=False)
+        data["callback"] = r_login.headers.get('Location', data["callback"])
+        self._sso_login.session.get(data["callback"], allow_redirects=True)
+        self._sso_login.session.get(CONFIG["urls"]["campus"]["cxcy_main"])
+
+        session = self._sso_login.session
+        session.headers.update(CONFIG["headers"]["cxcy"])
+        original_post = session.post
+
+        @functools.wraps(original_post)
+        def wrapped_post(url, data=None, json=None, **kwargs):
+            if "cxcy.bit.edu.cn" in url:
+                token = session.cookies.get('__RequestVerificationToken_L3B00')
+                if token:
+                    headers = kwargs.get('headers', CONFIG["headers"]["cxcy"].copy())
+                    headers['__RequestVerificationToken'] = token
+                    kwargs['headers'] = headers
+                    
+                    if data is None and json is None and 'files' not in kwargs:
+                        data = {}
+                    if isinstance(data, dict):
+                        data['__RequestVerificationToken'] = token
+
+            return original_post(url, data=data, json=json, **kwargs)
+
+        session.post = wrapped_post
+        print(session.cookies.get_dict())
+
+        print(session.post("http://cxcy.bit.edu.cn/pt/System/Platform/GetEffectivePlatformList").status_code)
+        
+        return self._get_cookies_result()
+    
