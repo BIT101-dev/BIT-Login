@@ -9,6 +9,7 @@ import os
 import uuid
 import threading
 import glob
+import requests
 from fastapi.responses import FileResponse
 # Import bit-login components
 from bit_login.service import jwb_login, jwb_cjd_login, jxzxehall_login
@@ -22,6 +23,20 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger("bit_login_server")
+
+HTTP_CONNECT_TIMEOUT = float(os.getenv("HTTP_CONNECT_TIMEOUT", "5"))
+HTTP_READ_TIMEOUT = float(os.getenv("HTTP_READ_TIMEOUT", "25"))
+HTTP_TIMEOUT = (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
+
+if not getattr(requests.sessions.Session.request, "_bit_login_timeout_patched", False):
+    _original_session_request = requests.sessions.Session.request
+
+    def _session_request_with_timeout(self, method, url, **kwargs):
+        kwargs.setdefault("timeout", HTTP_TIMEOUT)
+        return _original_session_request(self, method, url, **kwargs)
+
+    _session_request_with_timeout._bit_login_timeout_patched = True
+    requests.sessions.Session.request = _session_request_with_timeout
 
 app = FastAPI(
     title="BIT Login Services API",
@@ -73,6 +88,15 @@ class SessionManager:
         self._cache = {}  # (username, service_name): (session, timestamp)
         self._ttl = 1800  # 30 minutes (Session timeout)
         self._lock = threading.Lock()
+        self._key_locks = {}
+        self._key_locks_lock = threading.Lock()
+
+    def get_key_lock(self, username, service_name):
+        key = (username, service_name)
+        with self._key_locks_lock:
+            if key not in self._key_locks:
+                self._key_locks[key] = threading.RLock()
+            return self._key_locks[key]
 
     def get_session(self, username, service_name):
         key = (username, service_name)
@@ -92,13 +116,19 @@ class SessionManager:
     def set_session(self, username, service_name, session):
         key = (username, service_name)
         with self._lock:
+            old_session = self._cache.get(key, (None, None))[0]
             self._cache[key] = (session, time.time())
+        if old_session is not None and old_session is not session:
+            old_session.close()
 
     def invalidate(self, username, service_name):
         key = (username, service_name)
+        session = None
         with self._lock:
             if key in self._cache:
-                del self._cache[key]
+                session, _ = self._cache.pop(key)
+        if session is not None:
+            session.close()
     
     def cleanup_expired_sessions(self):
         """Clean up expired sessions periodically."""
@@ -166,24 +196,25 @@ def execute_service(login_cls, service_cls, username, password, service_name, fu
         method = getattr(srv, func_name)
         return method(**kwargs)
 
-    session = get_service_session(login_cls, username, password, service_name)
-    
-    try:
-        # Attempt 1
-        return call_service(session)
-    except Exception as e:
-        logger.info(f"First attempt failed for {username} on {service_name}.{func_name}. Reason: {str(e)}")
-        
-        # Invalidate cache and retry with fresh login
-        session_manager.invalidate(username, service_name)
+    with session_manager.get_key_lock(username, service_name):
         session = get_service_session(login_cls, username, password, service_name)
         
         try:
-            # Attempt 2
+            # Attempt 1
             return call_service(session)
-        except Exception as final_e:
-            logger.error(f"Second attempt failed for {username} on {service_name}.{func_name}. Reason: {str(final_e)}")
-            raise HTTPException(status_code=500, detail=f"{str(final_e)}")
+        except Exception as e:
+            logger.info(f"First attempt failed for {username} on {service_name}.{func_name}. Reason: {str(e)}")
+            
+            # Invalidate cache and retry with fresh login
+            session_manager.invalidate(username, service_name)
+            session = get_service_session(login_cls, username, password, service_name)
+            
+            try:
+                # Attempt 2
+                return call_service(session)
+            except Exception as final_e:
+                logger.error(f"Second attempt failed for {username} on {service_name}.{func_name}. Reason: {str(final_e)}")
+                raise HTTPException(status_code=500, detail=f"{str(final_e)}")
 
 # --- Endpoints ---
 
@@ -295,12 +326,13 @@ def get_jwb_cookies(request: BaseCredentials):
     """
     Get raw cookies after logging into JWB system and return formatted strings.
     """
-    session = get_service_session(
-        jwb_login, 
-        request.username, 
-        request.password, 
-        'jwb'
-    )
+    with session_manager.get_key_lock(request.username, 'jwb'):
+        session = get_service_session(
+            jwb_login, 
+            request.username, 
+            request.password, 
+            'jwb'
+        )
     
     try:
         cookies_dict = session.cookies.get_dict()
@@ -320,12 +352,13 @@ def get_jwb_cjd_cookies(request: BaseCredentials):
     """
     Get raw cookies after logging into JWB CJD system and return formatted strings.
     """
-    session = get_service_session(
-        jwb_cjd_login, 
-        request.username, 
-        request.password, 
-        'jwb_cjd'
-    )
+    with session_manager.get_key_lock(request.username, 'jwb_cjd'):
+        session = get_service_session(
+            jwb_cjd_login, 
+            request.username, 
+            request.password, 
+            'jwb_cjd'
+        )
     
     try:
         cookies_dict = session.cookies.get_dict()
@@ -344,12 +377,13 @@ def get_jxzxehall_cookies(request: BaseCredentials):
     """
     Get raw cookies after logging into JXZXEHALL (教学中心) system and return formatted strings.
     """
-    session = get_service_session(
-        jxzxehall_login, 
-        request.username, 
-        request.password, 
-        'jxzxehall'
-    )
+    with session_manager.get_key_lock(request.username, 'jxzxehall'):
+        session = get_service_session(
+            jxzxehall_login, 
+            request.username, 
+            request.password, 
+            'jxzxehall'
+        )
     
     try:
         cookies_dict = session.cookies.get_dict()
@@ -454,4 +488,3 @@ def startup_event():
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=16384, reload=True)
-

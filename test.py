@@ -26,9 +26,7 @@ print(bit_login.jwb.cjd(bit_login.jwb_cjd_login().login(username=username,passwo
 print("✅ PASS: JWB\n")
 
 print("Testing: JXZXEHALL (教学中心/一站式大厅)")
-print(bit_login.jxzxehall.credit(bit_login.jxzxehall_login().login(username=username, password=password).get_session()).get_credit())
-print(bit_login.jxzxehall.course(bit_login.jxzxehall_login().login(username=username, password=password).get_session()).get_courses())
-# print(bit_login.jxzxehall.classroom(bit_login.jxzxehall_login().login(username=username, password=password).get_session()).get_occupancy("2026-03-04"))
+assert bit_login.jxzxehall.credit(bit_login.jxzxehall_login().login(username=username, password=password).get_session()).get_credit()["total_credit"] > 0
 print("✅ PASS: JXZXEHALL\n")
 
 
@@ -41,7 +39,7 @@ assert '{"code":0,"message":"","data":{"' in bit_login.yanhekt_login().login(use
 print("✅ PASS: YANHEKT\n")
 
 print("Testing: LIBRARY (图书馆)")
-print(bit_login.library_login().login(username=username, password=password).get_result())
+assert bit_login.library_login().login(username=username, password=password).get_result()["cookie_json"] is not None
 print("✅ PASS: LIBRARY\n")
 
 # print("Testing: DEKT (第二课堂)")

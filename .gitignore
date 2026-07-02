@@ -5,3 +5,4 @@ build/
 bit_login.egg-info/
 gunicorn.ctl
 *.har
+.vscode/

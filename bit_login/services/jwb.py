@@ -226,7 +226,6 @@ class cjd:
     def get_cjd(self,gpa=True):
         require_gpa = 1 if gpa else 0
         res = self.session.get(f"https://jwb.bit.edu.cn/cjd/ScoreReport2/Index?GPA={require_gpa}").text
-        print(res)
         if "以下显示的是本次申请的成绩信息" not in res:
             raise Exception("成绩单获取失败!")
         img_url = "https://jwb.bit.edu.cn/cjd/Temp/"+res.split("<img src=\"/cjd/Temp/")[1].split('" class="img-fluid w-100" a')[0]

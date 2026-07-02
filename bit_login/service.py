@@ -274,7 +274,6 @@ class cxcy_login(BaseLogin):
             return original_post(url, data=data, json=json, **kwargs)
 
         session.post = wrapped_post
-        print(session.cookies.get_dict())
 
         print(session.post("http://cxcy.bit.edu.cn/pt/System/Platform/GetEffectivePlatformList").status_code)
         
