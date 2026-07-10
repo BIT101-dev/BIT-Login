@@ -1,4 +1,5 @@
 import requests
+from requests.adapters import HTTPAdapter
 import re
 from typing import Dict, Any
 from .config import CONFIG
@@ -8,12 +9,34 @@ class login_error(Exception):
     """BIT登录通用异常"""
     pass
 
+class _TimeoutHTTPAdapter(HTTPAdapter):
+    """HTTPAdapter that enforces a default request timeout."""
+    def __init__(self, *args, **kwargs):
+        self._default_timeout = kwargs.pop('timeout', 30)
+        super().__init__(*args, **kwargs)
+
+    def send(self, request, **kwargs):
+        kwargs.setdefault('timeout', self._default_timeout)
+        return super().send(request, **kwargs)
+
 class login:
     """BIT 统一身份认证核心类"""
     def __init__(self, base_url: str = ""):
         self.session = requests.Session()
+        # Enforce a default request timeout on all outgoing requests to prevent
+        # hung connections from accumulating indefinitely.
+        http_adapter = _TimeoutHTTPAdapter(timeout=30)
+        https_adapter = _TimeoutHTTPAdapter(timeout=30)
+        self.session.mount('http://', http_adapter)
+        self.session.mount('https://', https_adapter)
         self.session.headers.update({
-            'User-Agent': CONFIG["common"]["ua"]
+            'User-Agent': CONFIG["common"]["ua"],
+            # Disable HTTP keep-alive so that TCP connections are closed
+            # immediately after each response and are not held open in the
+            # connection pool.  Without this, every cached session retains a
+            # pool of idle sockets; under load this causes the server-wide TCP
+            # connection count to spike until resources are exhausted.
+            'Connection': 'close',
         })
         self.base_url = base_url if base_url else CONFIG["urls"]["base"]["sso_api"]
     

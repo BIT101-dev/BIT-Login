@@ -51,7 +51,7 @@ CONFIG = {
             'Accept': 'application/json, text/javascript, */*; q=0.01',
             'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7',
             'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
+            'Connection': 'close',
             'Pragma': 'no-cache',
             'Sec-Fetch-Dest': 'empty',
             'Sec-Fetch-Mode': 'cors',
