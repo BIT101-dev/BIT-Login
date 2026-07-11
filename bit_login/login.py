@@ -100,6 +100,58 @@ class login:
             "callback": callback,
         }
 
+    def export_state(self):
+        """Export the serializable state required to continue second auth."""
+        cookies = []
+        for cookie in self.session.cookies:
+            cookies.append({
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain,
+                "path": cookie.path,
+                "secure": cookie.secure,
+                "expires": cookie.expires,
+                "rest": dict(cookie._rest),
+            })
+        return {
+            "base_url": self.base_url,
+            "headers": dict(self.session.headers),
+            "cookies": cookies,
+            "second_auth_state": dict(self.second_auth.state) if self.second_auth.state else None,
+        }
+
+    def restore_state(self, state):
+        """Restore state previously returned by export_state()."""
+        if not isinstance(state, dict):
+            raise login_error("二次认证状态格式无效")
+        if state.get("base_url") != self.base_url:
+            raise login_error("二次认证登录地址不匹配")
+        headers = state.get("headers")
+        cookies = state.get("cookies")
+        second_auth_state = state.get("second_auth_state")
+        if not isinstance(headers, dict) or not isinstance(cookies, list):
+            raise login_error("二次认证会话状态格式无效")
+        if second_auth_state is not None and not isinstance(second_auth_state, dict):
+            raise login_error("二次认证流程状态格式无效")
+
+        self.session.headers.clear()
+        self.session.headers.update(headers)
+        self.session.cookies.clear()
+        for item in cookies:
+            if not isinstance(item, dict) or "name" not in item or "value" not in item:
+                raise login_error("二次认证 Cookie 状态格式无效")
+            self.session.cookies.set(
+                item["name"],
+                item["value"],
+                domain=item.get("domain"),
+                path=item.get("path", "/"),
+                secure=bool(item.get("secure", False)),
+                expires=item.get("expires"),
+                rest=item.get("rest") or {},
+            )
+        self.second_auth.state = dict(second_auth_state) if second_auth_state else None
+        return self
+
     def get_second_auth(self):
         return self.second_auth.describe()
 

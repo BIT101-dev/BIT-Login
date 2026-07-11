@@ -12,9 +12,9 @@ webvpn_mode = False
 
 class BaseLogin:
     """登录服务基类"""
-    def __init__(self):
+    def __init__(self, initialize_network=True):
         self._sso_login = login()
-        if not network_initialized: self.initialize_network()
+        if initialize_network and not network_initialized: self.initialize_network()
         self.initialized = False
         self.result = None
         self._pending_login = None
@@ -75,6 +75,45 @@ class BaseLogin:
         if self._pending_login:
             return self._pending_login.get_second_auth()
         return self._sso_login.get_second_auth()
+
+    def export_second_auth_state(self):
+        """Export only the state needed to resume an interrupted login."""
+        return {
+            "network_mode": "webvpn" if webvpn_mode else "campus",
+            "sso_login": self._sso_login.export_state(),
+            "pending_login": (
+                self._pending_login.export_second_auth_state()
+                if self._pending_login else None
+            ),
+            "resume_result": self._resume_result,
+        }
+
+    def restore_second_auth_state(self, state, username, password):
+        """Restore an interrupted login without retaining credentials in state."""
+        global network_initialized, webvpn_mode
+        if not isinstance(state, dict) or not isinstance(state.get("sso_login"), dict):
+            raise login_error("服务二次认证状态格式无效")
+        network_mode = state.get("network_mode")
+        if network_mode not in ("campus", "webvpn"):
+            raise login_error("服务二次认证网络状态无效")
+        webvpn_mode = network_mode == "webvpn"
+        CONFIG["urls"]["active"] = CONFIG["urls"][network_mode].copy()
+        CONFIG["urls"]["active"].update(CONFIG["urls"]["base"])
+        network_initialized = True
+        self._sso_login.restore_state(state["sso_login"])
+        self._credentials = (username, password)
+        self._resume_result = state.get("resume_result")
+        pending_state = state.get("pending_login")
+        if pending_state is not None:
+            pending = webvpn_login(initialize_network=False)
+            pending.restore_second_auth_state(pending_state, username, password)
+            self._pending_login = pending
+            self._webvpn_login = pending
+        else:
+            self._pending_login = None
+        self.initialized = False
+        self.result = None
+        return self
 
     def send_sms_code(self):
         if self._pending_login:
