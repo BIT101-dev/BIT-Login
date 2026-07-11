@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 
 from bit_login.login import login_error
 from server.core.auth import cache_authenticated_session, renew_challenge, restore_service_login
+from server.core.config import ENABLED_MFA_METHODS
 from server.core.mfa_state import challenge_ttl
 from server.schemas import SecondAuthCompleteRequest, SecondAuthRequest, SmsVerifyRequest
 
@@ -11,8 +12,17 @@ from server.schemas import SecondAuthCompleteRequest, SecondAuthRequest, SmsVeri
 router = APIRouter(prefix="/api/auth/second")
 
 
+def require_mfa_method(method):
+    if method not in ENABLED_MFA_METHODS:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "mfa_method_disabled", "message": "该二次认证方式未启用"},
+        )
+
+
 @router.post("/sms/send", summary="Send second-auth SMS code")
 def send_second_auth_sms(request: SecondAuthRequest):
+    require_mfa_method("sms")
     payload, service_login = restore_service_login(request)
     try:
         service_login.send_sms_code()
@@ -31,6 +41,7 @@ def send_second_auth_sms(request: SecondAuthRequest):
 
 @router.post("/sms/verify", summary="Verify second-auth SMS code")
 def verify_second_auth_sms(request: SmsVerifyRequest):
+    require_mfa_method("sms")
     payload, service_login = restore_service_login(request, require_password=True)
     try:
         service_login.verify_sms_code(request.code)
@@ -44,6 +55,7 @@ def verify_second_auth_sms(request: SmsVerifyRequest):
 
 @router.post("/dingtalk/begin", summary="Create second-auth DingTalk QR code")
 def begin_second_auth_dingtalk(request: SecondAuthRequest):
+    require_mfa_method("dingtalk")
     payload, service_login = restore_service_login(request)
     try:
         result = service_login.begin_dingtalk_qr()
@@ -66,6 +78,7 @@ def begin_second_auth_dingtalk(request: SecondAuthRequest):
 
 @router.post("/dingtalk/poll", summary="Poll second-auth DingTalk QR code")
 def poll_second_auth_dingtalk(request: SecondAuthCompleteRequest):
+    require_mfa_method("dingtalk")
     payload, service_login = restore_service_login(request, require_password=True)
     try:
         result = service_login.poll_dingtalk_qr()

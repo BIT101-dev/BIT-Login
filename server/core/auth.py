@@ -4,6 +4,7 @@ from fastapi import HTTPException
 
 from bit_login.login import login_error, second_auth_required
 from bit_login.service import jwb_cjd_login, jwb_login, jxzxehall_login
+from server.core.config import ENABLED_MFA_METHODS, MFA_METHOD_NAMES
 from server.core.mfa_state import (
     ChallengeConfigurationError,
     ExpiredChallenge,
@@ -38,7 +39,11 @@ def challenge_detail(service_name, username, service_login):
         "challenge_token": token,
         "expires_in": challenge_ttl(),
         "service": service_name,
-        "methods": auth["methods"],
+        "methods": [
+            MFA_METHOD_NAMES[method]
+            for method in ENABLED_MFA_METHODS
+            if MFA_METHOD_NAMES[method] in auth["methods"]
+        ],
         "phone": auth["phone"],
     }
 
