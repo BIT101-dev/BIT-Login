@@ -43,6 +43,37 @@ courses = bit_login.jxzxehall.courses(hall_login.get_session()).get_courses()
 # - bit_login.library_login()   # 图书馆
 ```
 
+### 二次认证
+
+启用二次认证的账号可使用短信验证码或钉钉扫码继续登录：
+
+```python
+import time
+import bit_login
+
+client = bit_login.login()
+
+try:
+    result = client.login(username, password, callback_url)
+except bit_login.second_auth_required:
+    # 短信验证码
+    client.send_sms_code()
+    result = client.verify_sms_code(input("短信验证码: "))
+
+    # 或使用钉钉扫码
+    # qr = client.begin_dingtalk_qr()
+    # print(qr["qr_url"])
+    # while True:
+    #     result = client.poll_dingtalk_qr()
+    #     if result.get("status") != "waiting":
+    #         break
+    #     time.sleep(1)
+
+print(result["callback"])
+```
+
+二次认证过程必须使用同一个 `client` 实例，以保留 CAS Cookie 和登录流程状态。
+
 ## 🌐 RESTful API 服务
 
 本项目提供了一个基于 FastAPI 的高性能 RESTful API 服务，支持连接池复用和自动重试，适合生产环境使用。
@@ -84,6 +115,9 @@ docker run -d -p 16384:16384 --name bit-login-server bit-login-server
 - `WORKERS`: Gunicorn 工作进程数 (默认: 4)
 - `PORT`: 服务端口 (默认: 16384)
 - `HOST`: 监听地址 (默认: 0.0.0.0)
+- `MFA_STATE_KEY`: 二次认证状态加密密钥，32 字节 URL-safe Base64 编码
+- `MFA_STATE_TTL`: 二次认证凭据有效期秒数 (默认: 300)
+- `MFA_METHODS`: 启用的二次认证方式，逗号分隔，可选 `sms`、`dingtalk` (默认: `sms,dingtalk`)
 
 示例：修改端口为 8080 并设置 8 个工作进程
 
@@ -93,6 +127,35 @@ docker run -d -p 8080:8080 \
   -e WORKERS=8 \
   bit-login-server
 ```
+
+可使用以下命令生成 `MFA_STATE_KEY`：
+
+```bash
+python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
+```
+
+使用 Docker Compose 时可在 `.env` 中仅启用需要的验证方式：
+
+```dotenv
+MFA_METHODS=dingtalk
+```
+
+也可在启动时直接设置，例如 `MFA_METHODS=sms docker compose up -d`。至少需要启用一种方式，配置未知方式时服务会拒绝启动。
+
+### 服务端二次认证
+
+启用二次认证的账号首次请求业务接口时会收到 HTTP 428，响应的
+`detail.challenge_token` 由客户端临时保存。服务端不会保存待验证的登录对象，
+因此后续请求可以由不同 Worker 处理。
+
+- `POST /api/auth/second/sms/send`: 请求短信验证码
+- `POST /api/auth/second/sms/verify`: 提交短信验证码和密码
+- `POST /api/auth/second/dingtalk/begin`: 创建钉钉二维码
+- `POST /api/auth/second/dingtalk/poll`: 携带密码轮询扫码状态
+
+短信发送或扫码等待响应都会返回新的 `challenge_token`，后续请求应始终使用
+最新 token。认证成功后，客户端重新请求原业务接口；该请求会复用服务端现有的
+30 分钟业务 Session 缓存。
 
 ### 接口文档
 

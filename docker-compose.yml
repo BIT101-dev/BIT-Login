@@ -1,0 +1,20 @@
+services:
+  bit-login-server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: bit-login-server
+    container_name: bit-login-server
+    ports:
+      - "16384:16384"
+    environment:
+      MFA_STATE_KEY: ${MFA_STATE_KEY}
+      MFA_STATE_TTL: "300"
+      MFA_METHODS: ${MFA_METHODS:-sms,dingtalk}
+      HTTP_CONNECT_TIMEOUT: "5"
+      HTTP_READ_TIMEOUT: "25"
+      BASE_URL: ${BASE_URL:-https://login.bit101.flwfdd.xyz}
+      WORKERS: "4"
+      HOST: "0.0.0.0"
+      PORT: "16384"
+    restart: unless-stopped

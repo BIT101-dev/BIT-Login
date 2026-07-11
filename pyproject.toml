@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=40.8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bit-login"
+version = "3.4.3"
+description = "北京理工大学统一身份验证登录模块"
+readme = "README.md"
+requires-python = ">=3.6"
+dependencies = [
+    "beautifulsoup4",
+    "cryptography",
+    "fastapi",
+    "pydantic",
+    "python-dotenv",
+    "requests",
+]

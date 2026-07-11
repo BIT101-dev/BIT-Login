@@ -18,6 +18,7 @@ setuptools.setup(
         "cryptography",
         "fastapi",
         "pydantic",
+        "python-dotenv",
         "requests"
     ],
     classifiers=[

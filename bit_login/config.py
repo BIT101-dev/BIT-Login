@@ -8,6 +8,7 @@ CONFIG = {
         "base":{
             "sso_api": "https://sso.bit.edu.cn/cas/v1/tickets",
             "sso_login_ui": "https://sso.bit.edu.cn/cas/login",
+            "sso_frontend_api": "https://sso.bit.edu.cn/gate",
         },
         "campus":{
             "jwb_cb": "http://jwms.bit.edu.cn/",
