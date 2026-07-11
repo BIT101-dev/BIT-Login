@@ -59,15 +59,20 @@ class DingtalkQrSecondAuth(SecondAuthMethod):
         if data.get("code") != 200 or not data.get("data"):
             raise self.flow.error("钉钉二维码创建失败: {}".format(data.get("code")))
         state["dingtalk_login_id"] = data["data"]
-        qr_url = self.flow.cas_url + "/api/public/qrlogin/qrgen/{}/dingDingQr".format(data["data"])
+        qr_url = self.flow.api_url + "/api/public/qrlogin/qrgen/{}/dingDingQr".format(data["data"])
         qr_response = self.flow.session.get(qr_url, headers={"Referer": state["page_url"]})
-        if qr_response.status_code != 200 or not qr_response.content:
+        content_type = qr_response.headers.get("Content-Type", "")
+        if (
+            qr_response.status_code != 200
+            or not qr_response.content
+            or not content_type.lower().startswith("image/")
+        ):
             raise self.flow.error("钉钉二维码下载失败: HTTP {}".format(qr_response.status_code))
         return {
             "login_id": data["data"],
             "qr_url": qr_url,
             "qr_content": qr_response.content,
-            "qr_content_type": qr_response.headers.get("Content-Type", "image/png"),
+            "qr_content_type": content_type,
             "status": "waiting",
         }
 
@@ -92,10 +97,10 @@ class DingtalkQrSecondAuth(SecondAuthMethod):
 class SecondAuthFlow:
     method_classes = (SmsSecondAuth, DingtalkQrSecondAuth)
 
-    def __init__(self, session, base_url, cas_url, error, complete):
+    def __init__(self, session, base_url, api_url, error, complete):
         self.session = session
         self.base_url = base_url
-        self.cas_url = cas_url
+        self.api_url = api_url.rstrip("/")
         self.error = error
         self._complete = complete
         self.state = None
@@ -132,7 +137,7 @@ class SecondAuthFlow:
         headers.update(self._csrf_headers())
         headers.setdefault("Accept-Language", "zh-CN,zh")
         headers.setdefault("sid-language", "zh_CN")
-        return self.session.request(method, self.cas_url + path, headers=headers, **kwargs)
+        return self.session.request(method, self.api_url + path, headers=headers, **kwargs)
 
     def response_json(self, response, message):
         try:

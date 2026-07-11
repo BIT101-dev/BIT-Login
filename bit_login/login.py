@@ -32,11 +32,16 @@ class login:
         parsed_base_url = urlparse(self.base_url)
         self.sso_origin = "{}://{}".format(parsed_base_url.scheme, parsed_base_url.netloc)
         self.cas_url = urljoin(self.sso_origin, "/cas")
+        self.sso_frontend_api = CONFIG["urls"]["base"]["sso_frontend_api"]
         self.sso_cookie_domain = parsed_base_url.hostname
         if parsed_base_url.path.rstrip("/").endswith("/cas/v1/tickets"):
             self.base_url = self.cas_url + "/login"
         self.second_auth = SecondAuthFlow(
-            self.session, self.base_url, self.cas_url, login_error, self._complete_second_auth
+            self.session,
+            self.base_url,
+            self.sso_frontend_api,
+            login_error,
+            self._complete_second_auth,
         )
 
     @staticmethod
