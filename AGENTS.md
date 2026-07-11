@@ -1,30 +1,29 @@
 # Repository Guide
 
-## Layout
+## Architecture
 
-- `bit_login/login.py` implements the low-level BIT CAS ticket flow. `bit_login/service.py` builds service-specific authenticated `requests.Session` objects; `bit_login/services/` consumes those sessions for JWB and JXZXEHALL data APIs.
-- `bit_login/__init__.py` is the public SDK surface. Keep exports there synchronized when adding or renaming public login/service classes.
-- `server/server.py` is the FastAPI app. It adds request timeouts globally, caches sessions for 30 minutes by `(username, service)`, retries service calls once after re-login, and writes generated calendars to `/tmp`.
-- URL and browser-header behavior is centralized in `bit_login/config.py`; avoid scattering replacement endpoints through service code.
+- `bit_login/login.py` owns the browser-form CAS flow; `bit_login/service.py` completes service-specific redirects and returns stateful authenticated `requests.Session` objects. Preserve sessions across all callback steps.
+- MFA state and method implementations live in `bit_login/second_auth.py`. Add methods as `SecondAuthMethod` implementations registered with `SecondAuthFlow`; keep the compatibility methods on `login` and `BaseLogin`, including nested WebVPN MFA continuation.
+- Keep public login/service exports synchronized in `bit_login/__init__.py`. Keep endpoint and browser-header changes centralized in `bit_login/config.py` rather than embedding replacement URLs in service code.
+- `server/server.py` monkey-patches default timeouts onto every `requests.Session`, caches sessions for 30 minutes by `(username, service)`, and retries a failed service call once after re-login. The API does not expose the interactive MFA continuation used by the SDK/test script.
 
-## Setup And Verification
+## Commands
 
-- Install the SDK and its declared dependencies from the repository root with `python -m pip install -e .`.
-- Server-only runtime dependencies, including Gunicorn/Uvicorn, are in `server/requirements.txt`; its pinned `bit-login` line refers to PyPI, while `server/Dockerfile` deliberately removes that line and installs this checkout.
-- There is no unit-test, lint, formatter, or typecheck configuration. Use `python -m compileall -q bit_login server` for offline syntax/import compilation.
-- `python test.py` is a sequential live integration script, not a unit suite. It requires real `BITUSERNAME` and `BITPASSWORD` credentials and contacts BIT SSO, WebVPN, JWB, JXZXEHALL, iBIT, Yanhekt, and the library; do not run it without explicit access to test credentials. To focus a check, run a small one-service snippet rather than this all-services script.
+- Use the committed uv environment: `uv sync`, then run tools with `uv run`; `.python-version` selects Python 3.14.
+- There is no configured unit suite, linter, formatter, or type checker. Offline verification is `uv run python -m compileall -q bit_login server` plus `git diff --check`.
+- `uv run python test.py --services jwb` runs one live integration target; accepted names are `webvpn`, `jwb`, `jwb_cjd`, `jxzxehall`, `ibit`, `yanhekt`, and `library`. Omitting `--services` contacts all of them sequentially.
+- Local API command: `uv run python -m uvicorn server.server:app --reload --port 16384`. README commands using root `server:app`, root `start.sh`, or port 8000 are stale.
+- Container build: `docker build -t bit-login-server -f server/Dockerfile .`. `server/start.sh` works in the image because the Dockerfile generates `server/__init__.py`; that file is absent locally.
 
-## Running The API
+## Live Auth
 
-- From the repository root, use `python -m uvicorn server.server:app --reload --port 16384` for development. The README commands naming root `server:app`, root `start.sh`, and port 8000 do not match the current tree.
-- Production/container defaults are `HOST=0.0.0.0`, `PORT=16384`, and `WORKERS=4`. Build with `docker build -t bit-login-server -f server/Dockerfile .`.
-- `server/start.sh` is container-oriented: it expects Docker's generated `server/__init__.py`. That file is not present in the checkout, so do not treat `bash server/start.sh` from the root as the canonical local launch path.
-- Optional API environment variables are `HTTP_CONNECT_TIMEOUT` (default `5`), `HTTP_READ_TIMEOUT` (default `25`), and `BASE_URL` (used in returned ICS download URLs).
+- `test.py` loads `.env` and requires real `BITUSERNAME`/`BITPASSWORD`; MFA optionally uses `BIT_SECOND_AUTH=sms|dingtalk` and `BIT_SMS_CODE`. Never run live integration without explicit credential/network approval, and never log, fixture, snapshot, commit, or put credentials directly in shell commands.
+- Login objects are stateful. After `second_auth_required`, continue on that same object with SMS or DingTalk QR; recreating it loses CAS cookies and execution state. Service MFA must resume each subclass's `_complete_login`, not merely GET the CAS callback.
+- The first `BaseLogin` probes network reachability and mutates process-global `CONFIG["urls"]["active"]`, `network_initialized`, and `webvpn_mode`. Reset all three when testing campus and WebVPN paths in one process.
+- The declared compatibility floor is Python 3.6 in both manifests. Do not use newer syntax unless intentionally changing that contract.
 
-## Behavioral Constraints
+## API Runtime
 
-- Constructing the first `BaseLogin` probes network reachability and mutates process-global `CONFIG["urls"]["active"]` plus `webvpn_mode`; later instances reuse that decision. Tests that exercise campus and WebVPN modes in one process must reset these globals explicitly.
-- Login classes are stateful and chainable: call `.login(username, password)` before `.get_session()` or `.get_result()`. Preserve the returned `requests.Session`; downstream service wrappers depend on its cookies and modified headers.
-- Accounts with MFA raise `second_auth_required` after password validation. Continue on the same login object with SMS (`send_sms_code()` then `verify_sms_code()`) or DingTalk QR (`begin_dingtalk_qr()` then poll `poll_dingtalk_qr()`); recreating the object loses CAS flow cookies and `execution` state.
-- Authentication tests and API requests use real passwords. Never log, commit, fixture, snapshot, or place credentials in command history; prefer environment variables for the existing integration script.
-- The package supports Python `>=3.6` in `setup.py`; do not introduce newer syntax unless that declared compatibility is intentionally changed.
+- Optional server variables are `HTTP_CONNECT_TIMEOUT=5`, `HTTP_READ_TIMEOUT=25`, and `BASE_URL`; `BASE_URL` only controls returned ICS download URLs.
+- Generated calendars are written under `/tmp`, deleted at startup, and expire after 30 minutes. Server startup also launches daemon cleanup threads for calendars and cached sessions.
+- `server/requirements.txt` pins the published `bit-login`; `server/Dockerfile` removes that line and installs this checkout. Preserve this distinction when changing packaging or container setup.
