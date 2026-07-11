@@ -117,6 +117,7 @@ docker run -d -p 16384:16384 --name bit-login-server bit-login-server
 - `HOST`: 监听地址 (默认: 0.0.0.0)
 - `MFA_STATE_KEY`: 二次认证状态加密密钥，32 字节 URL-safe Base64 编码
 - `MFA_STATE_TTL`: 二次认证凭据有效期秒数 (默认: 300)
+- `MFA_METHODS`: 启用的二次认证方式，逗号分隔，可选 `sms`、`dingtalk` (默认: `sms,dingtalk`)
 
 示例：修改端口为 8080 并设置 8 个工作进程
 
@@ -132,6 +133,14 @@ docker run -d -p 8080:8080 \
 ```bash
 python -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())"
 ```
+
+使用 Docker Compose 时可在 `.env` 中仅启用需要的验证方式：
+
+```dotenv
+MFA_METHODS=dingtalk
+```
+
+也可在启动时直接设置，例如 `MFA_METHODS=sms docker compose up -d`。至少需要启用一种方式，配置未知方式时服务会拒绝启动。
 
 ### 服务端二次认证
 
