@@ -3,7 +3,7 @@ import urllib.parse
 import os
 from .config import CONFIG
 from .utils import check_network_env,convert_to_webvpn_url
-from .login import login, login_error
+from .login import login, login_error, second_auth_required
 from urllib.parse import unquote
 import functools
 
@@ -17,6 +17,8 @@ class BaseLogin:
         if not network_initialized: self.initialize_network()
         self.initialized = False
         self.result = None
+        self._pending_login = None
+        self._resume_result = None
 
     def initialize_network(self):
         global network_initialized,webvpn_mode
@@ -39,14 +41,20 @@ class BaseLogin:
         """
         if webvpn_mode:
             callback = convert_to_webvpn_url(callback)
-            self._webvpn_login = webvpn_login()
-            self._webvpn_login.login(username,password)
+            if not hasattr(self, "_webvpn_login"):
+                self._webvpn_login = webvpn_login()
+                try:
+                    self._webvpn_login.login(username,password)
+                except second_auth_required:
+                    self._pending_login = self._webvpn_login
+                    raise
             self._sso_login.session = self._webvpn_login.get_session()
             self._webvpn_cookie = self._webvpn_login.get_session().cookies
         return callback
 
     def login(self, username, password):
         """登录(支持链式调用)"""
+        self._credentials = (username, password)
         self.result = self._login(username, password)
         self.initialized = True
         return self
@@ -63,6 +71,55 @@ class BaseLogin:
             raise Exception("未登录!")
         return self.result
 
+    def get_second_auth(self):
+        if self._pending_login:
+            return self._pending_login.get_second_auth()
+        return self._sso_login.get_second_auth()
+
+    def send_sms_code(self):
+        if self._pending_login:
+            return self._pending_login.send_sms_code()
+        return self._sso_login.send_sms_code()
+
+    def verify_sms_code(self, code):
+        if self._pending_login:
+            self._pending_login.verify_sms_code(code)
+            return self._resume_after_nested_auth()
+        self.result = self._finish_second_auth(self._sso_login.verify_sms_code(code))
+        self.initialized = True
+        return self
+
+    def begin_dingtalk_qr(self):
+        if self._pending_login:
+            return self._pending_login.begin_dingtalk_qr()
+        return self._sso_login.begin_dingtalk_qr()
+
+    def poll_dingtalk_qr(self):
+        if self._pending_login:
+            result = self._pending_login.poll_dingtalk_qr()
+            if isinstance(result, dict) and result.get("status") == "waiting":
+                return result
+            return self._resume_after_nested_auth()
+        result = self._sso_login.poll_dingtalk_qr()
+        if result.get("status") == "waiting":
+            return result
+        self.result = self._finish_second_auth(result)
+        self.initialized = True
+        return self
+
+    def _finish_second_auth(self, result):
+        username, password = self._credentials
+        self._resume_result = result
+        return self._complete_login(result, username, password)
+
+    def _resume_after_nested_auth(self):
+        self._pending_login = None
+        username, password = self._credentials
+        self.result = self._complete_login(self._resume_result, username, password)
+        self._resume_result = None
+        self.initialized = True
+        return self
+
     def _get_cookies_result(self):
         """通用格式化Cookie输出"""
         cookies = self._sso_login.session.cookies.get_dict()
@@ -76,8 +133,12 @@ class webvpn_login(BaseLogin):
     def _login(self, username, password):
         """WebVPN登录逻辑"""
         res = self._sso_login.login(username, password, callback_url=CONFIG["urls"]["webvpn"]["webvpn_cb"], webvpn_mode=True)
+        return self._complete_login(res, username, password)
+
+    def _complete_login(self, res, username, password):
         if res["callback"][0]=='/': res["callback"] = CONFIG["urls"]["webvpn"]["webvpn_origin"]+res["callback"]
         self._sso_login.session.get(res["callback"])
+        res.update(self._get_cookies_result())
         return res
 
 class jwb_login(BaseLogin):
@@ -92,7 +153,12 @@ class jwb_login(BaseLogin):
     def _login(self, username, password):
         """教务系统登录逻辑"""
         res = self._sso_login.login(username, password, callback_url=CONFIG["urls"]["campus"]["jwb_cb"])
+        return self._complete_login(res, username, password)
+
+    def _complete_login(self, res, username, password):
+        self._resume_result = res
         res["callback"] = self.patch_webvpn(username,password,res["callback"])
+        self._resume_result = None
         self._sso_login.session.trust_env = False
         headers = CONFIG["headers"]["jwb"].copy()
         headers["Referer"] = f'{CONFIG["urls"]["base"]["sso_login_ui"]}?service={urllib.parse.quote(CONFIG["urls"]["campus"]["jwb_cb"])}'
@@ -117,6 +183,9 @@ class jwb_cjd_login(BaseLogin):
     def _login(self, username, password):
         r1 = self._sso_login.session.get("https://jwb.bit.edu.cn/cjd/Account/ExternalLogin",allow_redirects=False)
         res = self._sso_login.login(username, password, callback_url=unquote(r1.headers["Location"].split("?service=")[-1]))
+        return self._complete_login(res, username, password)
+
+    def _complete_login(self, res, username, password):
         self._sso_login.session.get(res["callback"])
         return self._get_cookies_result()
 
@@ -132,7 +201,13 @@ class jxzxehall_login(BaseLogin):
         except Exception:
             raise login_error("jxzxehall: 解析 service url 失败")
         res = self._sso_login.login(username, password, callback_url=callback_url)
+        return self._complete_login(res, username, password)
+
+    def _complete_login(self, res, username, password):
+        headers = CONFIG["headers"]["jxzxehall"]
+        self._resume_result = res
         res["callback"] = self.patch_webvpn(username,password,res["callback"])
+        self._resume_result = None
         self._sso_login.session.get(res["callback"], headers=headers)
         self._sso_login.session.get(CONFIG["urls"]["active"]["jxzxehall_app_base"])
         self._sso_login.session.get(CONFIG["urls"]["active"]["jxzxehall_config"], headers=headers)
@@ -143,6 +218,9 @@ class ibit_login(BaseLogin):
     def _login(self, username, password):
         """iBIT登录逻辑"""
         data = self._sso_login.login(username, password, callback_url=CONFIG["urls"]["campus"]["ibit_cb"])
+        return self._complete_login(data, username, password)
+
+    def _complete_login(self, data, username, password):
         try:
             r_login = self._sso_login.session.get(data["callback"], allow_redirects=False)
             data["callback"] = r_login.headers.get('Location', data["callback"])
@@ -161,6 +239,9 @@ class yanhekt_login(BaseLogin):
     def _login(self, username, password):
         """延河课堂登录逻辑"""
         data = self._sso_login.login(username, password, callback_url=CONFIG["urls"]["campus"]["yanhekt_cb"])
+        return self._complete_login(data, username, password)
+
+    def _complete_login(self, data, username, password):
         token = ""
         try:
             r_login = self._sso_login.session.get(data["callback"], allow_redirects=False)
@@ -179,11 +260,9 @@ class yanhekt_login(BaseLogin):
             pass
         if not token: 
             raise login_error("Yanhekt Token 解析失败")
-        return {
-            "token": token,
-            "cookie_json": data['cookie_json'],
-            "cookie": data['cookie']
-        }
+        result = self._get_cookies_result()
+        result["token"] = token
+        return result
 
 class library_login(BaseLogin):
     """图书馆"""
@@ -203,6 +282,10 @@ class library_login(BaseLogin):
         cas_service = CONFIG["urls"]["campus"]["lib_cas"]
         self._sso_login.session.headers['Referer'] = f"{CONFIG['urls']['base']['sso_login_ui']}?service={urllib.parse.quote(cas_service)}"
         data = self._sso_login.login(username, password, callback_url=cas_service)
+        return self._complete_login(data, username, password)
+
+    def _complete_login(self, data, username, password):
+        cas_service = CONFIG["urls"]["campus"]["lib_cas"]
         r_login = self._sso_login.session.get(data["callback"], allow_redirects=False)
         data["callback"] = r_login.headers.get('Location', data["callback"])
         callback_url = data['callback']
@@ -238,6 +321,9 @@ class dekt_login(BaseLogin):
     def _login(self, username, password):
         """第二课堂登录逻辑(尚不可用)"""
         data = self._sso_login.login(username, password, callback_url=CONFIG["urls"]["campus"]["dekt_cb"])
+        return self._complete_login(data, username, password)
+
+    def _complete_login(self, data, username, password):
         self._sso_login.session.get(data["callback"], allow_redirects=True)
         return self._get_cookies_result()
 
@@ -248,6 +334,9 @@ class cxcy_login(BaseLogin):
     def _login(self, username, password):
         """大创系统登录逻辑"""
         data = self._sso_login.login(username, password, callback_url=CONFIG["urls"]["campus"]["cxcy_cas"])
+        return self._complete_login(data, username, password)
+
+    def _complete_login(self, data, username, password):
         r_login = self._sso_login.session.get(data["callback"], allow_redirects=False)
         data["callback"] = r_login.headers.get('Location', data["callback"])
         self._sso_login.session.get(data["callback"], allow_redirects=True)

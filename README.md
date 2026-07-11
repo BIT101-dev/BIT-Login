@@ -43,6 +43,37 @@ courses = bit_login.jxzxehall.courses(hall_login.get_session()).get_courses()
 # - bit_login.library_login()   # 图书馆
 ```
 
+### 二次认证
+
+启用二次认证的账号可使用短信验证码或钉钉扫码继续登录：
+
+```python
+import time
+import bit_login
+
+client = bit_login.login()
+
+try:
+    result = client.login(username, password, callback_url)
+except bit_login.second_auth_required:
+    # 短信验证码
+    client.send_sms_code()
+    result = client.verify_sms_code(input("短信验证码: "))
+
+    # 或使用钉钉扫码
+    # qr = client.begin_dingtalk_qr()
+    # print(qr["qr_url"])
+    # while True:
+    #     result = client.poll_dingtalk_qr()
+    #     if result.get("status") != "waiting":
+    #         break
+    #     time.sleep(1)
+
+print(result["callback"])
+```
+
+二次认证过程必须使用同一个 `client` 实例，以保留 CAS Cookie 和登录流程状态。
+
 ## 🌐 RESTful API 服务
 
 本项目提供了一个基于 FastAPI 的高性能 RESTful API 服务，支持连接池复用和自动重试，适合生产环境使用。
