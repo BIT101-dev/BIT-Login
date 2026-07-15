@@ -24,6 +24,28 @@ BUILDING_MAP = {
     "西山阻燃楼": (40.037061, 116.232287), "物理实验中心": (39.729071, 116.170698)
 }
 
+
+class JxzxehallDataError(Exception):
+    """The teaching-center endpoint did not return usable application data."""
+
+
+def _response_json(response, label):
+    if not response.ok:
+        raise JxzxehallDataError(
+            f"教学中心{label}接口返回 HTTP {response.status_code}"
+        )
+    try:
+        value = response.json()
+    except ValueError as exc:
+        content_type = response.headers.get("Content-Type", "unknown").split(";", 1)[0]
+        raise JxzxehallDataError(
+            f"教学中心{label}接口未返回 JSON(类型 {content_type});"
+            "无法解析"
+        ) from exc
+    if not isinstance(value, dict):
+        raise JxzxehallDataError(f"教学中心{label}接口返回了无效数据")
+    return value
+
 def get_weeks(data):
     """根据数据获取周次列表"""
     text = data["ZCMC"]
@@ -113,17 +135,29 @@ class course:
         self.session = session
     def get_courses(self, kksj=None):
         """获取指定或当前学期课程表及排课基础数据"""
+        api_headers = CONFIG["headers"]["base"]
         term = kksj
         if not term:
             url = f"{CONFIG['urls']['active']['jxzxehall_app']}/jwapp/sys/wdkbby/modules/jshkcb/dqxnxq.do"
-            res = self.session.get(url).json()
-            term = res["datas"]["dqxnxq"]["rows"][0]["DM"]
+            res = _response_json(
+                self.session.get(url, headers=api_headers), "当前学期"
+            )
+            try:
+                term = res["datas"]["dqxnxq"]["rows"][0]["DM"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise JxzxehallDataError(
+                    "教学中心未返回当前学期；该账号可能不使用本科教学中心"
+                ) from exc
 
         req_param = json.dumps({"XNXQDM": term, "ZC": "1"})
-        first_day_res = self.session.post(
-            f"{CONFIG['urls']['active']['jxzxehall_app']}/jwapp/sys/wdkbby/wdkbByController/cxzkbrq.do",
-            data={"requestParamStr": req_param}
-        ).json()
+        first_day_res = _response_json(
+            self.session.post(
+                f"{CONFIG['urls']['active']['jxzxehall_app']}/jwapp/sys/wdkbby/wdkbByController/cxzkbrq.do",
+                data={"requestParamStr": req_param},
+                headers=api_headers,
+            ),
+            "校历",
+        )
         
         first_day = ""
         for v in first_day_res.get("data", []):
@@ -131,24 +165,34 @@ class course:
                 first_day = v.get("RQ")
                 break
         
-        self.session.headers.update({
-            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7"
-        })
-        schedule_res = self.session.post(
-            f"{CONFIG['urls']['active']['jxzxehall_app']}/jwapp/sys/wdkbby/modules/xskcb/cxxszhxqkb.do?vpn-12-o2-jxzxehallapp.bit.edu.cn",
-            data={"XNXQDM": term}
-        ).json()
+        schedule_res = _response_json(
+            self.session.post(
+                f"{CONFIG['urls']['active']['jxzxehall_app']}/jwapp/sys/wdkbby/modules/xskcb/cxxszhxqkb.do?vpn-12-o2-jxzxehallapp.bit.edu.cn",
+                data={"XNXQDM": term},
+                headers=api_headers,
+            ),
+            "课程表",
+        )
+        try:
+            rows = schedule_res["datas"]["cxxszhxqkb"]["rows"]
+        except (KeyError, TypeError) as exc:
+            raise JxzxehallDataError(
+                "教学中心未返回本科课程表"
+            ) from exc
 
         return {
             "term": term,
             "firstDay": first_day,
-            "data": schedule_res["datas"]["cxxszhxqkb"]["rows"]
+            "data": rows,
         }
 
     def generate_ics(self, kksj=None):
         """获取课程表并生成ics格式数据及统计说明"""
         schedule = self.get_courses(kksj)
-        first_day = datetime.strptime(schedule["firstDay"], "%Y-%m-%d")
+        try:
+            first_day = datetime.strptime(schedule["firstDay"], "%Y-%m-%d")
+        except (TypeError, ValueError) as exc:
+            raise JxzxehallDataError("教学中心未返回有效的学期开始日期") from exc
         class_count = 0
         time_count = 0
         
@@ -378,4 +422,3 @@ class classroom:
             page_number += 1
             
         return all_classrooms
-

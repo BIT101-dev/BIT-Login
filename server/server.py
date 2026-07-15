@@ -25,7 +25,7 @@ from bit_login.service import (
     yanhekt_login,
 )
 from bit_login.services.jwb import score, cjd
-from bit_login.services.jxzxehall import course, credit
+from bit_login.services.jxzxehall import JxzxehallDataError, course, credit
 from server.auth import ChallengeError, SQLiteChallengeStore
 
 # Restored SQLite sessions may be consumed by a different worker than the one
@@ -416,7 +416,10 @@ def get_courses(
     Get student courses (schedule).
     """
     session = _resolve_service_session(request, "jxzxehall", authorization)
-    result = course(session).get_courses(kksj=request.kksj)
+    try:
+        result = course(session).get_courses(kksj=request.kksj)
+    except JxzxehallDataError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"data": result}
 
 
@@ -498,7 +501,10 @@ def generate_schedule_ics(
 ):
     global ICS_FILES
     session = _resolve_service_session(request, "jxzxehall", authorization)
-    ics_content, note = course(session).generate_ics(kksj=request.kksj)
+    try:
+        ics_content, note = course(session).generate_ics(kksj=request.kksj)
+    except JxzxehallDataError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     
     file_uuid = str(uuid.uuid4())
     file_path = f"/tmp/{file_uuid}.ics"

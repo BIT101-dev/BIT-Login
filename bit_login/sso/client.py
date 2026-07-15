@@ -324,7 +324,14 @@ class BitSsoClient:
         form = self._common_form(page, "smsLogin", phone)
         form.update({"captcha_code": "", "password": sms_code})
         self._add_risk_fields(form, page, "smsLogin", phone)
-        response = self._post_login(page, form, service)
+        try:
+            response = self._post_login(page, form, service)
+        except requests.HTTPError as exc:
+            if self._is_sms_rejection(exc):
+                raise SmsVerificationError(
+                    "短信验证码错误或已失效，请重新发起登录"
+                ) from exc
+            raise
         return self._login_result(response)
 
     def _load_login_page(
@@ -484,12 +491,19 @@ class BitSsoClient:
             "captcha_code": "",
             "trustDevice": str(bool(trust_device)).lower(),
         }
-        response = self._request(
-            "POST",
-            page.form_action,
-            data=form,
-            allow_redirects=follow_redirects,
-        )
+        try:
+            response = self._request(
+                "POST",
+                page.form_action,
+                data=form,
+                allow_redirects=follow_redirects,
+            )
+        except requests.HTTPError as exc:
+            if self._is_sms_rejection(exc):
+                raise SmsVerificationError(
+                    "短信验证码错误或已失效，请重新发起登录"
+                ) from exc
+            raise
         return self._login_result(response)
 
     def _second_factor_phone(self, page: SecondFactorPage) -> Any:
@@ -757,3 +771,8 @@ class BitSsoClient:
     def _sms_code_remains_valid(cls, value: Any) -> bool:
         message = cls._response_message(value)
         return "验证码" in message and "有效期内" in message and "重复发送" in message
+
+    @staticmethod
+    def _is_sms_rejection(error: requests.HTTPError) -> bool:
+        response = error.response
+        return response is not None and response.status_code in {400, 401, 403}
