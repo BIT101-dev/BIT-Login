@@ -1,8 +1,12 @@
 # test.py
 __pycache__/
+*.py[cod]
 dist/
 build/
 bit_login.egg-info/
 gunicorn.ctl
 *.har
+*.db
+*.db-wal
+*.db-shm
 .vscode/

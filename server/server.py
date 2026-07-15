@@ -1,7 +1,7 @@
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Optional
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
+from typing import List, Optional
 import logging
 import time
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,10 +12,25 @@ import glob
 import requests
 from fastapi.responses import FileResponse
 # Import bit-login components
-from bit_login.service import jwb_login, jwb_cjd_login, jxzxehall_login
+from bit_login.service import (
+    cxcy_login,
+    dekt_login,
+    ibit_login,
+    initialize_network,
+    jwb_cjd_login,
+    jwb_login,
+    jxzxehall_login,
+    library_login,
+    webvpn_login,
+    yanhekt_login,
+)
 from bit_login.services.jwb import score, cjd
 from bit_login.services.jxzxehall import course, credit
-from bit_login.login import login_error
+from server.auth import ChallengeError, SQLiteChallengeStore
+
+# Restored SQLite sessions may be consumed by a different worker than the one
+# that logged in, so every worker must initialize its process-local URL map.
+initialize_network()
 
 # Configure logging
 logging.basicConfig(
@@ -68,12 +83,23 @@ app.add_middleware(
 # --- Pydantic Models ---
 
 class BaseCredentials(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    challenge_id: Optional[str] = None
+
+class AuthStartRequest(BaseCredentials):
     username: str
     password: str
+    services: List[str] = Field(default_factory=lambda: ["jwb"])
+    wait_seconds: float = Field(default=1.0, ge=0.0, le=5.0)
+
+class SmsCodeRequest(BaseModel):
+    code: str
 
 class JwbScoreRequest(BaseCredentials):
     kksj: Optional[str] = None
     detail: bool = False
+    detailed: Optional[bool] = None
 
 class JwbAllScoreRequest(BaseCredentials):
     detailed: bool = False
@@ -81,140 +107,126 @@ class JwbAllScoreRequest(BaseCredentials):
 class JxzxehallCoursesRequest(BaseCredentials):
     kksj: Optional[str] = None
 
-# --- Session Management ---
+AUTH_SERVICES = {
+    "webvpn": webvpn_login,
+    "jwb": jwb_login,
+    "jwb_cjd": jwb_cjd_login,
+    "jxzxehall": jxzxehall_login,
+    "ibit": ibit_login,
+    "yanhekt": yanhekt_login,
+    "library": library_login,
+    "dekt": dekt_login,
+    "cxcy": cxcy_login,
+}
+challenge_store = SQLiteChallengeStore.from_env()
 
-class SessionManager:
-    def __init__(self):
-        self._cache = {}  # (username, service_name): (session, timestamp)
-        self._ttl = 1800  # 30 minutes (Session timeout)
-        self._lock = threading.Lock()
-        self._key_locks = {}
-        self._key_locks_lock = threading.Lock()
 
-    def get_key_lock(self, username, service_name):
-        key = (username, service_name)
-        with self._key_locks_lock:
-            if key not in self._key_locks:
-                self._key_locks[key] = threading.RLock()
-            return self._key_locks[key]
-
-    def get_session(self, username, service_name):
-        key = (username, service_name)
-        with self._lock:
-            if key in self._cache:
-                session, timestamp = self._cache[key]
-                if time.time() - timestamp < self._ttl:
-                    return session
-                else:
-                    try:
-                        del self._cache[key]
-                        session.close()
-                    except:
-                        pass
-        return None
-
-    def set_session(self, username, service_name, session):
-        key = (username, service_name)
-        with self._lock:
-            old_session = self._cache.get(key, (None, None))[0]
-            self._cache[key] = (session, time.time())
-        if old_session is not None and old_session is not session:
-            old_session.close()
-
-    def invalidate(self, username, service_name):
-        key = (username, service_name)
-        session = None
-        with self._lock:
-            if key in self._cache:
-                session, _ = self._cache.pop(key)
-        if session is not None:
-            session.close()
-    
-    def cleanup_expired_sessions(self):
-        """Clean up expired sessions periodically."""
-        while True:
-            time.sleep(300)  # Check every 5 minutes
-            current_time = time.time()
-            expired_keys = []
-            
-            with self._lock:
-                for key, (session, timestamp) in list(self._cache.items()):
-                    if current_time - timestamp > self._ttl:
-                        expired_keys.append(key)
-                
-                for key in expired_keys:
-                    try:
-                        session, _ = self._cache.pop(key)
-                        session.close()
-                    except KeyError:
-                        pass
-            
-            if expired_keys:
-                logger.info(f"Cleaned up {len(expired_keys)} expired sessions.")
-
-session_manager = SessionManager()
-
-def get_service_session(login_cls, username, password, service_name):
-    """Get session from cache or login."""
-    # Try cache
-    session = session_manager.get_session(username, service_name)
-    if session:
-        return session
-    
-    # Login
-    logger.info(f"Performing fresh login for {username} - {service_name}")
+def _challenge_or_http(challenge_id, access_token):
     try:
-        service_login = login_cls()
+        return challenge_store.authenticate(challenge_id, access_token or "")
+    except ChallengeError as exc:
+        status = 403 if "access token" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+
+def _challenge_from_header(authorization):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Bearer challenge token required")
+    access_token = authorization[7:].strip()
+    if not access_token:
+        raise HTTPException(status_code=401, detail="Bearer challenge token required")
+    return access_token
+
+
+def _run_authentication(challenge_id, username, password, services):
+    callback = lambda context: challenge_store.wait_for_sms(challenge_id, context)
+    seed_session = None
+    for service_name in services:
+        service_session = requests.Session()
+        if seed_session is not None:
+            service_session.cookies.update(seed_session.cookies)
+        login_cls = AUTH_SERVICES[service_name]
+        service_login = login_cls(
+            sms_code_callback=callback,
+            session=service_session,
+        )
         service_login.login(username, password)
-        session = service_login.get_session()
-        session_manager.set_session(username, service_name, session)
-        return session
-    except login_error as e:
-        logger.warning(f"Login failed for user {username}: {str(e)}")
-        raise HTTPException(status_code=401, detail=f"Login failed: {str(e)}")
-    except Exception as e:
-        logger.error(f"Unexpected error during login for user {username}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error during login: {str(e)}")
+        if seed_session is None:
+            seed_session = service_login.get_session()
+        challenge_store.store_service(
+            challenge_id,
+            service_name,
+            service_login.get_session(),
+            service_login.get_result(),
+        )
+    challenge_store.complete(challenge_id)
 
-def execute_service(login_cls, service_cls, username, password, service_name, func_name, **kwargs):
-    """
-    Execute a service function with auto-retry mechanism.
-    
-    Args:
-        login_cls: The login class (e.g., jwb_login)
-        service_cls: The service wrapper class (e.g., jwb)
-        username: User's username
-        password: User's password
-        service_name: Unique name for session caching (e.g., 'jwb')
-        func_name: Name of the method to call on service_cls instance
-        **kwargs: Arguments for the service method
-    """
-    
-    # Function to create service instance and call method
-    def call_service(s):
-        srv = service_cls(s)
-        method = getattr(srv, func_name)
-        return method(**kwargs)
 
-    with session_manager.get_key_lock(username, service_name):
-        session = get_service_session(login_cls, username, password, service_name)
-        
+def _start_authentication_worker(username, password, services):
+    handle = challenge_store.create(services)
+
+    def authenticate() -> None:
         try:
-            # Attempt 1
-            return call_service(session)
-        except Exception as e:
-            logger.info(f"First attempt failed for {username} on {service_name}.{func_name}. Reason: {str(e)}")
-            
-            # Invalidate cache and retry with fresh login
-            session_manager.invalidate(username, service_name)
-            session = get_service_session(login_cls, username, password, service_name)
-            
-            try:
-                # Attempt 2
-                return call_service(session)
-            except Exception as final_e:
-                logger.error(f"Second attempt failed for {username} on {service_name}.{func_name}. Reason: {str(final_e)}")
-                raise HTTPException(status_code=500, detail=f"{str(final_e)}")
+            _run_authentication(
+                handle.challenge_id,
+                username,
+                password,
+                services,
+            )
+        except BaseException as exc:
+            challenge_store.fail(handle.challenge_id, exc)
+
+    threading.Thread(target=authenticate, daemon=True).start()
+    return handle
+
+
+def _credentials_or_http(request):
+    if not request.username or not request.password:
+        raise HTTPException(
+            status_code=400,
+            detail="username/password or an authenticated Bearer challenge is required",
+        )
+    return request.username, request.password
+
+
+def _resolve_service_session(request, service_name, authorization):
+    if authorization:
+        access_token = _challenge_from_header(authorization)
+        challenge_id = request.challenge_id
+        if not challenge_id:
+            raise HTTPException(
+                status_code=400,
+                detail="challenge_id is required when using a Bearer challenge",
+            )
+        try:
+            return challenge_store.get_session(
+                challenge_id, access_token, service_name
+            )
+        except ChallengeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    username, password = _credentials_or_http(request)
+    handle = _start_authentication_worker(username, password, [service_name])
+    challenge_store.wait_until_actionable(
+        handle.challenge_id, handle.access_token, 1.0
+    )
+    snapshot = challenge_store.snapshot(
+        handle.challenge_id,
+        handle.access_token,
+        include_access_token=True,
+    )
+    if snapshot["status"] != "authenticated":
+        raise HTTPException(status_code=202, detail=snapshot)
+    try:
+        return challenge_store.get_session(
+            handle.challenge_id, handle.access_token, service_name
+        )
+    except ChallengeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+def _score_detailed(request: JwbScoreRequest) -> bool:
+    if request.detailed is not None:
+        return request.detailed
+    return request.detail
 
 # --- Endpoints ---
 
@@ -222,46 +234,134 @@ def execute_service(login_cls, service_cls, username, password, service_name, fu
 async def root():
     return {"message": "BIT Login Services API is running"}
 
+
+# --- Authentication Challenges ---
+
+@app.post("/api/auth/start", status_code=202, summary="Start an SSO challenge")
+def start_authentication(request: AuthStartRequest):
+    services = list(dict.fromkeys(request.services))
+    invalid = sorted(set(services) - set(AUTH_SERVICES))
+    if not services or invalid:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "invalid authentication services",
+                "invalid": invalid,
+                "supported": sorted(AUTH_SERVICES),
+            },
+        )
+    handle = _start_authentication_worker(
+        request.username, request.password, services
+    )
+    challenge_store.wait_until_actionable(
+        handle.challenge_id, handle.access_token, request.wait_seconds
+    )
+    return challenge_store.snapshot(
+        handle.challenge_id,
+        handle.access_token,
+        include_access_token=True,
+    )
+
+
+@app.get("/api/auth/{challenge_id}", summary="Get SSO challenge status")
+def get_authentication_status(
+    challenge_id: str,
+    x_challenge_token: Optional[str] = Header(default=None),
+):
+    _challenge_or_http(challenge_id, x_challenge_token)
+    return challenge_store.snapshot(challenge_id, x_challenge_token or "")
+
+
+@app.post("/api/auth/{challenge_id}/sms", summary="Submit an SSO SMS code")
+def submit_authentication_sms(
+    challenge_id: str,
+    request: SmsCodeRequest,
+    x_challenge_token: Optional[str] = Header(default=None),
+):
+    _challenge_or_http(challenge_id, x_challenge_token)
+    try:
+        challenge_store.submit_sms(
+            challenge_id, x_challenge_token or "", request.code
+        )
+    except ChallengeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    challenge_store.wait_until_actionable(
+        challenge_id, x_challenge_token or "", 1.0
+    )
+    return challenge_store.snapshot(challenge_id, x_challenge_token or "")
+
+
+@app.get(
+    "/api/auth/{challenge_id}/services/{service}",
+    summary="Get a completed downstream login result",
+)
+def get_authentication_service_result(
+    challenge_id: str,
+    service: str,
+    x_challenge_token: Optional[str] = Header(default=None),
+):
+    _challenge_or_http(challenge_id, x_challenge_token)
+    if service not in AUTH_SERVICES:
+        raise HTTPException(status_code=404, detail="unknown authentication service")
+    try:
+        result = challenge_store.get_result(
+            challenge_id, x_challenge_token or "", service
+        )
+    except ChallengeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"service": service, "data": result}
+
+
+@app.delete("/api/auth/{challenge_id}", summary="Delete an SSO challenge")
+def delete_authentication(
+    challenge_id: str,
+    x_challenge_token: Optional[str] = Header(default=None),
+):
+    _challenge_or_http(challenge_id, x_challenge_token)
+    challenge_store.delete(challenge_id, x_challenge_token or "")
+    return {"status": "deleted"}
+
 # --- JWB Services ---
 
 @app.post("/api/jwb/score", summary="Get scores for a specific semester")
-def get_jwb_score(request: JwbScoreRequest):
+def get_jwb_score(
+    request: JwbScoreRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get scores from JWB system.
     """
-    result = execute_service(
-        jwb_login, jwb, 
-        request.username, request.password, 'jwb', 
-        'get_score', 
-        kksj=request.kksj, detailed=request.detailed
+    session = _resolve_service_session(request, "jwb", authorization)
+    result = score(session).get_score(
+        kksj=request.kksj, detailed=_score_detailed(request)
     )
     return {"data": result}
 
 @app.post("/api/jwb/all_score", summary="Get all scores")
-def get_jwb_all_score(request: JwbAllScoreRequest):
+def get_jwb_all_score(
+    request: JwbAllScoreRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get all scores from JWB system.
     """
-    result = execute_service(
-        jwb_login, score, 
-        request.username, request.password, 'jwb', 
-        'get_all_score', 
-        detailed=request.detailed
-    )
+    session = _resolve_service_session(request, "jwb", authorization)
+    result = score(session).get_all_score(detailed=request.detailed)
     return {"data": result}
 
 # --- JWB bit101 Format Services ---
 
 @app.post("/api/jwb/bit101/score", summary="Get bit101 format scores")
-def get_jwb_bit101_score(request: JwbScoreRequest):
+def get_jwb_bit101_score(
+    request: JwbScoreRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get matching bit101 format scores from JWB system.
     """
-    result = execute_service(
-        jwb_login, score, 
-        request.username, request.password, 'jwb', 
-        'get_bit101_score', 
-        kksj=request.kksj, detailed=request.detail
+    session = _resolve_service_session(request, "jwb", authorization)
+    result = score(session).get_bit101_score(
+        kksj=request.kksj, detailed=_score_detailed(request)
     )
     return {
         "msg": "查询成功OvO",
@@ -269,70 +369,66 @@ def get_jwb_bit101_score(request: JwbScoreRequest):
     }
 
 @app.post("/api/jwb/cjd/img", summary="Get all scores")
-def get_jwb_cjd_img(request: JwbAllScoreRequest):
+def get_jwb_cjd_img(
+    request: JwbAllScoreRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get all scores from JWB system.
     """
-    result = execute_service(
-        jwb_cjd_login, cjd, 
-        request.username, request.password, 'jwb_cjd_img', 
-        'get_cjd'
-    )
+    session = _resolve_service_session(request, "jwb_cjd", authorization)
+    result = cjd(session).get_cjd()
     return {"data": {"url": result}}
 
 # --- JXZXEHALL Services ---
 
 @app.post("/api/jxzxehall/student_data", summary="Get student personal data")
-def get_student_data(request: BaseCredentials):
+def get_student_data(
+    request: BaseCredentials,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get student personal information from JXZXEHALL.
     """
-    result = execute_service(
-        jxzxehall_login, credit, 
-        request.username, request.password, 'jxzxehall', 
-        'get_student_data'
-    )
+    session = _resolve_service_session(request, "jxzxehall", authorization)
+    result = credit(session).get_student_data()
     return {"data": result}
 
 @app.post("/api/jxzxehall/credit", summary="Get student credit info")
-def get_credit(request: BaseCredentials):
+def get_credit(
+    request: BaseCredentials,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get student credit information.
     """
-    result = execute_service(
-        jxzxehall_login, credit, 
-        request.username, request.password, 'jxzxehall', 
-        'get_credit'
-    )
+    session = _resolve_service_session(request, "jxzxehall", authorization)
+    result = credit(session).get_credit()
     return {"data": result}
 
 @app.post("/api/jxzxehall/courses", summary="Get courses")
-def get_courses(request: JxzxehallCoursesRequest):
+def get_courses(
+    request: JxzxehallCoursesRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get student courses (schedule).
     """
-    result = execute_service(
-        jxzxehall_login, course, 
-        request.username, request.password, 'jxzxehall', 
-        'get_courses', 
-        kksj=request.kksj
-    )
+    session = _resolve_service_session(request, "jxzxehall", authorization)
+    result = course(session).get_courses(kksj=request.kksj)
     return {"data": result}
 
 
 # --- Cookies ---
 @app.post("/api/jwb/cookies", summary="Get JWB login cookies")
-def get_jwb_cookies(request: BaseCredentials):
+def get_jwb_cookies(
+    request: BaseCredentials,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get raw cookies after logging into JWB system and return formatted strings.
     """
-    with session_manager.get_key_lock(request.username, 'jwb'):
-        session = get_service_session(
-            jwb_login, 
-            request.username, 
-            request.password, 
-            'jwb'
-        )
+    session = _resolve_service_session(request, "jwb", authorization)
     
     try:
         cookies_dict = session.cookies.get_dict()
@@ -348,17 +444,14 @@ def get_jwb_cookies(request: BaseCredentials):
 
 
 @app.post("/api/jwb/cjd/cookies", summary="Get JWB CJD login cookies")
-def get_jwb_cjd_cookies(request: BaseCredentials):
+def get_jwb_cjd_cookies(
+    request: BaseCredentials,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get raw cookies after logging into JWB CJD system and return formatted strings.
     """
-    with session_manager.get_key_lock(request.username, 'jwb_cjd'):
-        session = get_service_session(
-            jwb_cjd_login, 
-            request.username, 
-            request.password, 
-            'jwb_cjd'
-        )
+    session = _resolve_service_session(request, "jwb_cjd", authorization)
     
     try:
         cookies_dict = session.cookies.get_dict()
@@ -373,17 +466,14 @@ def get_jwb_cjd_cookies(request: BaseCredentials):
         raise HTTPException(status_code=500, detail="Failed to extract cookies from session")
 
 @app.post("/api/jxzxehall/cookies", summary="Get JXZXEHALL login cookies")
-def get_jxzxehall_cookies(request: BaseCredentials):
+def get_jxzxehall_cookies(
+    request: BaseCredentials,
+    authorization: Optional[str] = Header(default=None),
+):
     """
     Get raw cookies after logging into JXZXEHALL (教学中心) system and return formatted strings.
     """
-    with session_manager.get_key_lock(request.username, 'jxzxehall'):
-        session = get_service_session(
-            jxzxehall_login, 
-            request.username, 
-            request.password, 
-            'jxzxehall'
-        )
+    session = _resolve_service_session(request, "jxzxehall", authorization)
     
     try:
         cookies_dict = session.cookies.get_dict()
@@ -401,14 +491,13 @@ def get_jxzxehall_cookies(request: BaseCredentials):
 ICS_FILES = {}
 
 @app.post("/api/jxzxehall/schedule_ics", summary="Generate ICS schedule file")
-def generate_schedule_ics(request: JxzxehallCoursesRequest):
+def generate_schedule_ics(
+    request: JxzxehallCoursesRequest,
+    authorization: Optional[str] = Header(default=None),
+):
     global ICS_FILES
-    ics_content, note = execute_service(
-        jxzxehall_login, course, 
-        request.username, request.password, 'jxzxehall', 
-        'generate_ics', 
-        kksj=request.kksj
-    )
+    session = _resolve_service_session(request, "jxzxehall", authorization)
+    ics_content, note = course(session).generate_ics(kksj=request.kksj)
     
     file_uuid = str(uuid.uuid4())
     file_path = f"/tmp/{file_uuid}.ics"
@@ -468,6 +557,7 @@ def clear_ics_files():
             finally:
                 ICS_FILES.pop(k, None)
 
+
 @app.on_event("startup")
 def startup_event():
     for f in glob.glob("/tmp/*.ics"):
@@ -481,10 +571,5 @@ def startup_event():
     clear_thread.start()
     logger.info("ICS cleanup background thread started.")
     
-    session_cleanup_thread = threading.Thread(target=session_manager.cleanup_expired_sessions)
-    session_cleanup_thread.daemon = True
-    session_cleanup_thread.start()
-    logger.info("Session cleanup background thread started.")
-
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=16384, reload=True)

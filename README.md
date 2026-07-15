@@ -5,9 +5,9 @@
 ## 📥 安装
 
 ```bash
-git clone https://github.com/yht0511/bit-login.git
+git clone https://github.com/BIT101-dev/bit-login.git
 cd bit-login
-pip install -r requirements.txt
+pip install -e '.[captcha]'
 ```
 
 ## 🚀 快速开始 (Python SDK)
@@ -45,16 +45,15 @@ courses = bit_login.jxzxehall.courses(hall_login.get_session()).get_courses()
 
 ## 🌐 RESTful API 服务
 
-本项目提供了一个基于 FastAPI 的高性能 RESTful API 服务，支持连接池复用和自动重试，适合生产环境使用。
+本项目提供 FastAPI 服务。
 
 ### 启动服务
 
 ```bash
-# 启动服务器 (默认端口 8000)
-bash start.sh
+bash server/start.sh
 
 # 或者手动启动
-gunicorn server:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+gunicorn server:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:16384
 ```
 
 ### 🐳 Docker 部署
@@ -72,7 +71,9 @@ docker build -t bit-login-server -f server/Dockerfile .
 #### 2. 启动容器
 
 ```bash
-docker run -d -p 16384:16384 --name bit-login-server bit-login-server
+docker run -d -p 16384:16384 \
+  -v bit-login-data:/app/data \
+  --name bit-login-server bit-login-server
 ```
 
 服务启动后，可以通过 `http://localhost:16384` 访问服务。
@@ -84,6 +85,9 @@ docker run -d -p 16384:16384 --name bit-login-server bit-login-server
 - `WORKERS`: Gunicorn 工作进程数 (默认: 4)
 - `PORT`: 服务端口 (默认: 16384)
 - `HOST`: 监听地址 (默认: 0.0.0.0)
+- `AUTH_DB_PATH`: SQLite 路径（Docker 默认 `/app/data/auth.db`，本机默认 `/tmp/bit-login/auth.db`）
+- `AUTH_CHALLENGE_TTL`: 等待短信验证码的秒数（默认 300）
+- `AUTH_SESSION_TTL`: 下游 Session 保留秒数（默认 1800）
 
 示例：修改端口为 8080 并设置 8 个工作进程
 
@@ -91,21 +95,49 @@ docker run -d -p 16384:16384 --name bit-login-server bit-login-server
 docker run -d -p 8080:8080 \
   -e PORT=8080 \
   -e WORKERS=8 \
+  -v bit-login-data:/app/data \
   bit-login-server
 ```
 
 ### 接口文档
 
-所有接口均为 POST 请求，Content-Type 为 `application/json`。
+### 短信 challenge
+
+服务端登录采用显式的异步 challenge，适用于任意数量的本机 Gunicorn worker：
+
+```bash
+# 1. 开始登录，可一次建立多个下游 Session
+curl -X POST http://localhost:16384/api/auth/start \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"学号","password":"密码","services":["jwb","jxzxehall"]}'
+
+# 响应中的 challenge_id 用于定位流程，access_token 必须保密。
+
+# 2. status=waiting_sms 后提交验证码
+curl -X POST http://localhost:16384/api/auth/CHALLENGE_ID/sms \
+  -H 'Content-Type: application/json' \
+  -H 'X-Challenge-Token: ACCESS_TOKEN' \
+  -d '{"code":"123456"}'
+
+# 3. 查询直至 status=authenticated
+curl http://localhost:16384/api/auth/CHALLENGE_ID \
+  -H 'X-Challenge-Token: ACCESS_TOKEN'
+
+# 4. 获取下游登录结果（Cookie、iBIT badge、延河/图书馆 token 等）
+curl http://localhost:16384/api/auth/CHALLENGE_ID/services/yanhekt \
+  -H 'X-Challenge-Token: ACCESS_TOKEN'
+
+# 5. 使用已建立的 JWB Session，不再发送账号密码
+curl -X POST http://localhost:16384/api/jwb/all_score \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer ACCESS_TOKEN' \
+  -d '{"challenge_id":"CHALLENGE_ID","detailed":false}'
+```
+
+支持的 challenge service 名称：`webvpn`、`jwb`、`jwb_cjd`、`jxzxehall`、`ibit`、`yanhekt`、`library`、`dekt`、`cxcy`。
+
 
 #### 通用请求参数
-接口都需要携带用户的账号密码用于认证。
-```json
-{
-  "username": "your_username",
-  "password": "your_password"
-}
-```
 
 #### 1. 教务系统 - 获取成绩 (全部)
 **URL**: `/api/jwb/all_score`
@@ -141,8 +173,8 @@ curl -X POST "http://localhost:8000/api/jwb/all_score" \
   - `login.py`: 基础登录逻辑 (SSO)
   - `service.py`: 各个服务的登录封装
   - `services/`: 具体业务逻辑 (如教务查分、课程表)
-- `server.py`: FastAPI 服务端入口
-- `test.py`: SDK 测试脚本
+- `server/server.py`: FastAPI 服务端入口
+- `server/auth.py`: SQLite WAL challenge 与加密 Session 存储
 
 ## 🔗 参考仓库
 

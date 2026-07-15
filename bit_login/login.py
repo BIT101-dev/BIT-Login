@@ -1,77 +1,107 @@
+from typing import Any, Callable, Dict, Optional
+from urllib.parse import parse_qs, urljoin, urlparse
+
 import requests
-import re
-from typing import Dict, Any
+
 from .config import CONFIG
-from .utils import convert_to_webvpn_url
+from .sso import BitSsoClient, DdddOcrCaptchaSolver
+from .sso.exceptions import BitSsoError
+from .sso.models import SmsCodeContext
+
 
 class login_error(Exception):
-    """BIT登录通用异常"""
-    pass
+    """BIT login compatibility error."""
+
+
+SmsCodeCallback = Callable[[SmsCodeContext], str]
+
 
 class login:
-    """BIT 统一身份认证核心类"""
-    def __init__(self, base_url: str = ""):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': CONFIG["common"]["ua"]
-        })
-        self.base_url = base_url if base_url else CONFIG["urls"]["base"]["sso_api"]
-    
-    def _get_tgt(self, username, password, retries=0) -> str:
-        """获取 Ticket Granting Ticket"""
-        headers = {'Content-Type': CONFIG["common"]["content_type_form"]}
-        
-        r = self.session.post(
-            self.base_url, 
-            data={'username': username, 'password': password},
-            headers=headers
+    """Compatibility wrapper backed by the current CAS browser flow."""
+
+    def __init__(
+        self,
+        base_url: str = "",
+        *,
+        session: Optional[requests.Session] = None,
+        captcha_solver: Optional[Callable[..., str]] = None,
+        sms_code_callback: Optional[SmsCodeCallback] = None,
+        timeout: float = 25.0,
+    ) -> None:
+        if base_url and "/cas/v1/tickets" not in base_url:
+            sso_base_url = base_url.rstrip("/")
+        else:
+            sso_base_url = CONFIG["urls"]["base"].get(
+                "sso_base", "https://sso.bit.edu.cn"
+            )
+        self.session = session or requests.Session()
+        self.sms_code_callback = sms_code_callback
+        self.captcha_solver = captcha_solver or self._default_captcha_solver()
+        self._client = BitSsoClient(
+            session=self.session,
+            base_url=sso_base_url,
+            captcha_solver=self.captcha_solver,
+            timeout=timeout,
         )
-        
-        if r.status_code == 401: raise login_error("登录失败: 账号或密码错误")
-        if r.status_code != 201: 
-            if retries>5: raise login_error(f"TGT获取失败: {r.status_code}")
-            return self._get_tgt(username,password,retries+1)
 
-        tgt = r.headers.get('Location')
-        if not tgt:
-            match = re.search(r'action="([^"]+)"', r.text)
-            if match: tgt = match.group(1)
-            
-        if not tgt: raise login_error("无法解析 TGT URL")
-        return tgt
-
-
-    def login(self, username: str, password: str, callback_url: str = "", webvpn_mode=False,retries=0) -> Dict[str, Any]:
+    @staticmethod
+    def _default_captcha_solver() -> Optional[Callable[..., str]]:
         try:
-            # 1. 获取 TGT
-            tgt_url = self._get_tgt(username, password)
-            
-            # 2. 获取 ST 
-            headers = {'Content-Type': CONFIG["common"]["content_type_form"]}
-            r_st = self.session.post(tgt_url, data={'service': callback_url}, headers=headers)
-            
-            if r_st.status_code != 200: 
-                if retries>5: raise login_error(f"ST获取失败: {r_st.status_code}")
-                return self.login(username,password,callback_url,webvpn_mode,retries+1)
-            
-            ticket = r_st.text.strip()
+            return DdddOcrCaptchaSolver()
+        except BitSsoError:
+            return None
 
-            # 3. 验证 Ticket 并建立 Session
-            if webvpn_mode: callback_url = convert_to_webvpn_url(callback_url)
+    def login(
+        self,
+        username: str,
+        password: str,
+        callback_url: str = "",
+        webvpn_mode: bool = False,
+        retries: int = 0,
+        *,
+        sms_code_callback: Optional[SmsCodeCallback] = None,
+        trust_device: bool = False,
+    ) -> Dict[str, Any]:
+        del webvpn_mode, retries
+        if not callback_url:
+            raise login_error("callback_url must not be empty")
+        try:
+            result = self._client.login_password(
+                username,
+                password,
+                service=callback_url,
+                sms_code_callback=sms_code_callback or self.sms_code_callback,
+                trust_device=trust_device,
+                follow_redirects=False,
+            )
+        except (BitSsoError, requests.RequestException, ValueError) as exc:
+            raise login_error(str(exc)) from exc
 
-            separator = "&" if "?" in callback_url else "?"
-            callback = f"{callback_url}{separator}ticket={ticket}"
+        callback = self._ticket_callback(result.response, result.ticket, callback_url)
+        cookies = self.session.cookies.get_dict()
+        return {
+            "cookie_json": cookies,
+            "cookie": "; ".join(f"{key}={value}" for key, value in cookies.items()),
+            "callback": callback,
+            "ticket": result.ticket,
+        }
 
+    @staticmethod
+    def _ticket_callback(response: Any, ticket: Optional[str], service: str) -> str:
+        headers = getattr(response, "headers", {}) or {}
+        location = headers.get("Location")
+        response_url = str(getattr(response, "url", "") or "")
+        if location:
+            callback = urljoin(response_url, str(location))
+        elif ticket:
+            separator = "&" if "?" in service else "?"
+            callback = f"{service}{separator}ticket={ticket}"
+        else:
+            callback = response_url
 
-            return {
-                "cookie_json": self.session.cookies.get_dict(),
-                "cookie": "; ".join([f"{k}={v}" for k, v in self.session.cookies.items()]),
-                "callback": callback
-            }
-        except requests.RequestException as e:
-            raise login_error(e)
-        except Exception as e:
-            raise login_error(str(e))
-
-
-
+        callback_ticket = next(
+            iter(parse_qs(urlparse(callback).query).get("ticket", [])), None
+        )
+        if not callback_ticket and not ticket:
+            raise login_error("CAS did not issue a service ticket")
+        return callback

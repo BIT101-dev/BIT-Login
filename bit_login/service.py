@@ -1,6 +1,6 @@
 import requests
 import urllib.parse
-import os
+import threading
 from .config import CONFIG
 from .utils import check_network_env,convert_to_webvpn_url
 from .login import login, login_error
@@ -9,26 +9,47 @@ import functools
 
 network_initialized = False
 webvpn_mode = False
+_network_init_lock = threading.Lock()
+
+
+def initialize_network():
+    """Initialize process-local downstream URLs once."""
+    global network_initialized, webvpn_mode
+    if network_initialized and "active" in CONFIG["urls"]:
+        return
+    with _network_init_lock:
+        if network_initialized and "active" in CONFIG["urls"]:
+            return
+        print("Initializing network...", end=" ", flush=True)
+        webvpn_mode = not check_network_env()
+        source = "webvpn" if webvpn_mode else "campus"
+        CONFIG["urls"]["active"] = CONFIG["urls"][source].copy()
+        CONFIG["urls"]["active"].update(CONFIG["urls"]["base"])
+        network_initialized = True
+        print("✅ Done.")
 
 class BaseLogin:
     """登录服务基类"""
-    def __init__(self):
-        self._sso_login = login()
-        if not network_initialized: self.initialize_network()
+    def __init__(
+        self,
+        *,
+        sms_code_callback=None,
+        captcha_solver=None,
+        session=None,
+    ):
+        self.sms_code_callback = sms_code_callback
+        self.captcha_solver = captcha_solver
+        self._sso_login = login(
+            sms_code_callback=sms_code_callback,
+            captcha_solver=captcha_solver,
+            session=session,
+        )
+        initialize_network()
         self.initialized = False
         self.result = None
 
     def initialize_network(self):
-        global network_initialized,webvpn_mode
-        print("Initializing network...",end=" ",flush=True)
-        if check_network_env():
-            CONFIG["urls"]["active"] = CONFIG["urls"]["campus"].copy()
-        else:
-            CONFIG["urls"]["active"] = CONFIG["urls"]["webvpn"].copy()
-            webvpn_mode = True
-        CONFIG["urls"]["active"].update(CONFIG["urls"]["base"])
-        network_initialized = True
-        print("✅ Done.")
+        initialize_network()
 
     def _login(self, username, password):
         """具体登录逻辑子类实现"""
@@ -39,14 +60,22 @@ class BaseLogin:
         """
         if webvpn_mode:
             callback = convert_to_webvpn_url(callback)
-            self._webvpn_login = webvpn_login()
+            self._webvpn_login = webvpn_login(
+                sms_code_callback=self.sms_code_callback,
+                captcha_solver=self.captcha_solver,
+                session=self._sso_login.session,
+            )
             self._webvpn_login.login(username,password)
             self._sso_login.session = self._webvpn_login.get_session()
+            self._sso_login._client.session = self._sso_login.session
             self._webvpn_cookie = self._webvpn_login.get_session().cookies
         return callback
 
-    def login(self, username, password):
+    def login(self, username, password, *, sms_code_callback=None):
         """登录(支持链式调用)"""
+        if sms_code_callback is not None:
+            self.sms_code_callback = sms_code_callback
+            self._sso_login.sms_code_callback = sms_code_callback
         self.result = self._login(username, password)
         self.initialized = True
         return self
@@ -195,15 +224,21 @@ class library_login(BaseLogin):
             'Origin': CONFIG["urls"]["campus"]["lib_origin"],
             'Referer': CONFIG["urls"]["campus"]["lib_referer"]
         })
-        self._sso_login.session.headers.update(lib_headers)
-        try: 
-            self._sso_login.session.get(CONFIG["urls"]["campus"]["lib_cas"])
-        except: 
-            pass
         cas_service = CONFIG["urls"]["campus"]["lib_cas"]
-        self._sso_login.session.headers['Referer'] = f"{CONFIG['urls']['base']['sso_login_ui']}?service={urllib.parse.quote(cas_service)}"
+        try:
+            # Seed only the library origin. Following this redirect would preload a
+            # separate CAS execution and leak downstream API headers into SSO.
+            self._sso_login.session.get(
+                cas_service,
+                headers=lib_headers,
+                allow_redirects=False,
+            )
+        except requests.RequestException:
+            pass
         data = self._sso_login.login(username, password, callback_url=cas_service)
-        r_login = self._sso_login.session.get(data["callback"], allow_redirects=False)
+        r_login = self._sso_login.session.get(
+            data["callback"], headers=lib_headers, allow_redirects=False
+        )
         data["callback"] = r_login.headers.get('Location', data["callback"])
         callback_url = data['callback']
         cas_ticket = ""
@@ -211,7 +246,9 @@ class library_login(BaseLogin):
             cas_ticket = callback_url.split('cas=')[1].split('&')[0]
         else:
             try:
-                r_retry = self._sso_login.session.get(cas_service, allow_redirects=False)
+                r_retry = self._sso_login.session.get(
+                    cas_service, headers=lib_headers, allow_redirects=False
+                )
                 loc = r_retry.headers.get('Location', '')
                 if 'cas=' in loc: 
                     cas_ticket = loc.split('cas=')[1].split('&')[0]
@@ -220,8 +257,10 @@ class library_login(BaseLogin):
         if not cas_ticket: 
             raise login_error(f"图书馆登录失败: 未获取到 CAS Ticket (Url: {callback_url})")
         try:
-            self._sso_login.session.headers['Referer'] = CONFIG["urls"]["campus"]["lib_referer"]
-            resp = self._sso_login.session.post(CONFIG["urls"]["campus"]["lib_auth"], json={'cas': cas_ticket}).json()
+            self._sso_login.session.headers.update(lib_headers)
+            resp = self._sso_login.session.post(
+                CONFIG["urls"]["campus"]["lib_auth"], json={'cas': cas_ticket}
+            ).json()
             if resp.get("code") != 1:
                 raise login_error(f"图书馆授权失败: {resp.get('msg')}")
             res = self._get_cookies_result()

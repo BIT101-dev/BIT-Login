@@ -6,6 +6,7 @@ CONFIG = {
     },
     "urls": {
         "base":{
+            "sso_base": "https://sso.bit.edu.cn",
             "sso_api": "https://sso.bit.edu.cn/cas/v1/tickets",
             "sso_login_ui": "https://sso.bit.edu.cn/cas/login",
         },
