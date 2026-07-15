@@ -298,7 +298,11 @@ class BitSsoClient:
             f"publicNoToken/sendCheckCaptcha/DEFAULT/{encoded_code}/{encoded_phone}/0008",
         )
         send_code = self._response_code(send_result)
-        if send_code is not None and send_code != 200:
+        if (
+            send_code is not None
+            and send_code != 200
+            and not self._sms_code_remains_valid(send_result)
+        ):
             raise SmsVerificationError(
                 self._response_message(send_result) or "failed to trigger the SMS code"
             )
@@ -434,7 +438,10 @@ class BitSsoClient:
             f"{self.cas_url}/api/protected/sms/publicNoToken/sendSmsCode",
             json={"phone": opaque_phone, "businessNo": "0008"},
         )
-        if self._response_code(send_result) != 200:
+        if (
+            self._response_code(send_result) != 200
+            and not self._sms_code_remains_valid(send_result)
+        ):
             raise SmsVerificationError(
                 self._response_message(send_result)
                 or "failed to send the second-factor SMS code"
@@ -745,3 +752,8 @@ class BitSsoClient:
                 if data.get(key):
                     return str(data[key])
         return ""
+
+    @classmethod
+    def _sms_code_remains_valid(cls, value: Any) -> bool:
+        message = cls._response_message(value)
+        return "验证码" in message and "有效期内" in message and "重复发送" in message
