@@ -65,8 +65,6 @@ ALLOWED_ORIGINS = [
     "http://bit101.cn",
     "http://127.0.0.1:3000",
     "http://localhost:3000",
-    "https://deploy-preview-57--bit101-demo.netlify.app",
-    "http://deploy-preview-57--bit101-demo.netlify.app"
 ]
 base_url = os.getenv("BASE_URL", "https://login.bit101.flwfdd.xyz")  
 
@@ -74,7 +72,10 @@ base_url = os.getenv("BASE_URL", "https://login.bit101.flwfdd.xyz")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,       # 基础白名单
-    allow_origin_regex=r'^https?://[a-zA-Z0-9\-]+\.bit101\.cn$',  # 子域名通配
+    allow_origin_regex=(
+        r"^(?:https?://[a-zA-Z0-9-]+\.bit101\.cn|"
+        r"https://deploy-preview-\d+--bit101-demo\.netlify\.app)$"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
