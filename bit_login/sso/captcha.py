@@ -13,7 +13,7 @@ class DdddOcrCaptchaSolver:
                 import ddddocr
             except ImportError as exc:
                 raise CaptchaError(
-                    "ddddocr is not installed; run: pip install 'bit-sso[captcha]'"
+                    "ddddocr 未安装，请在服务器执行：pip install ddddocr"
                 ) from exc
             ocr_options.setdefault("show_ad", False)
             ocr = ddddocr.DdddOcr(**ocr_options)

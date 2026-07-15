@@ -40,15 +40,15 @@ MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAjVr1zKwohU3xA0afprWLSQvIymaSH/V27Med
 -----END PUBLIC KEY-----"""
 
 _LOGIN_ERROR_MESSAGES = {
-    "1030027": "username or password is incorrect",
-    "1030028": "the account is locked",
-    "1030031": "username or password is incorrect",
-    "1320007": "the verification code is incorrect",
-    "1320010": "the image captcha is incorrect",
-    "1330001": "the login was rejected by account risk control",
-    "1410040": "the account is invalid",
-    "1410041": "the account is invalid",
-    "3910001": "the account is dormant and must be reactivated",
+    "1030027": "用户名或密码错误",
+    "1030028": "账号已被锁定",
+    "1030031": "用户名或密码错误",
+    "1320007": "验证码错误或已失效",
+    "1320010": "图形验证码错误",
+    "1330001": "登录被账号风控拒绝",
+    "1410040": "账号状态无效",
+    "1410041": "账号状态无效",
+    "3910001": "账号已休眠，请先完成账号激活",
 }
 
 
@@ -251,9 +251,14 @@ class BitSsoClient:
             }
         )
         self._add_risk_fields(form, page, "UsernamePassword", username)
-        response = self._post_login(
-            page, form, service, follow_redirects=follow_redirects
-        )
+        try:
+            response = self._post_login(
+                page, form, service, follow_redirects=follow_redirects
+            )
+        except requests.HTTPError as exc:
+            if not self._is_login_rejection(exc):
+                raise
+            response = exc.response
         second_factor = self._parse_second_factor(response)
         if second_factor is not None:
             return self._complete_password_sms_factor(
@@ -263,7 +268,7 @@ class BitSsoClient:
                 trust_device=trust_device,
                 follow_redirects=follow_redirects,
             )
-        return self._login_result(response)
+        return self._login_result(response, rejection_message="用户名或密码错误")
 
     def login_sms(
         self,
@@ -327,12 +332,12 @@ class BitSsoClient:
         try:
             response = self._post_login(page, form, service)
         except requests.HTTPError as exc:
-            if self._is_sms_rejection(exc):
-                raise SmsVerificationError(
-                    "短信验证码错误或已失效，请重新发起登录"
-                ) from exc
-            raise
-        return self._login_result(response)
+            if not self._is_login_rejection(exc):
+                raise
+            response = exc.response
+        return self._login_result(
+            response, rejection_message="短信验证码错误或已失效，请重新发起登录"
+        )
 
     def _load_login_page(
         self, service: Optional[str], *, follow_redirects: bool = True
@@ -499,12 +504,12 @@ class BitSsoClient:
                 allow_redirects=follow_redirects,
             )
         except requests.HTTPError as exc:
-            if self._is_sms_rejection(exc):
-                raise SmsVerificationError(
-                    "短信验证码错误或已失效，请重新发起登录"
-                ) from exc
-            raise
-        return self._login_result(response)
+            if not self._is_login_rejection(exc):
+                raise
+            response = exc.response
+        return self._login_result(
+            response, rejection_message="短信验证码错误或已失效，请重新发起登录"
+        )
 
     def _second_factor_phone(self, page: SecondFactorPage) -> Any:
         body, encrypted_key, aes_key = encrypt_url_crypto_body(
@@ -546,10 +551,16 @@ class BitSsoClient:
             "POST", page.form_action, data=form, allow_redirects=follow_redirects
         )
 
-    def _login_result(self, response: Any) -> LoginResult:
+    def _login_result(
+        self,
+        response: Any,
+        *,
+        rejection_message: str = "统一身份认证拒绝了登录请求",
+    ) -> LoginResult:
         page, error_message, error_code = _parse_login_html(response.text, response.url)
         second_factor_page = _parse_second_factor_html(response.text, response.url)
         final_url = response.url
+        status_code = getattr(response, "status_code", None)
         history = tuple(getattr(response, "history", ()) or ())
         ticket = self._find_ticket(response, history)
         login_markup = any(
@@ -563,9 +574,10 @@ class BitSsoClient:
             )
         )
         is_login_url = urlparse(final_url).path.rstrip("/").endswith("/cas/login")
+        login_rejected = is_login_url and status_code in {400, 401, 403}
         if page is not None or second_factor_page is not None or (
             is_login_url and login_markup
-        ):
+        ) or login_rejected:
             returned_execution = (
                 page.execution
                 if page is not None
@@ -578,14 +590,17 @@ class BitSsoClient:
                 if returned_execution and self._last_execution
                 else None
             )
-            message, error_code = self._format_login_error(
-                error_message, error_code, ticket_issued=bool(ticket)
-            )
+            if login_rejected and not error_message.strip() and not error_code.strip():
+                message = rejection_message
+            else:
+                message, error_code = self._format_login_error(
+                    error_message, error_code, ticket_issued=bool(ticket)
+                )
             raise LoginError(
                 message,
                 code=error_code,
                 final_url=final_url,
-                status_code=getattr(response, "status_code", None),
+                status_code=status_code,
                 redirect_count=len(history),
                 ticket_issued=bool(ticket),
                 risk_mode=self.last_risk_mode,
@@ -685,7 +700,9 @@ class BitSsoClient:
         self, image: bytes, context: CaptchaContext, solver: Optional[CaptchaSolver]
     ) -> str:
         if solver is None:
-            raise CaptchaError("captcha is required, but no captcha_solver was configured")
+            raise CaptchaError(
+                "登录需要图形验证码，但服务器未安装或配置验证码识别器（ddddocr）"
+            )
         code = str(solver(image, context)).strip()
         if not code:
             raise CaptchaError("captcha_solver returned an empty value")
@@ -773,6 +790,9 @@ class BitSsoClient:
         return "验证码" in message and "有效期内" in message and "重复发送" in message
 
     @staticmethod
-    def _is_sms_rejection(error: requests.HTTPError) -> bool:
+    def _is_login_rejection(error: requests.HTTPError) -> bool:
         response = error.response
-        return response is not None and response.status_code in {400, 401, 403}
+        if response is None or response.status_code not in {400, 401, 403}:
+            return False
+        path = urlparse(str(response.url or "")).path.rstrip("/")
+        return path.endswith("/cas/login")

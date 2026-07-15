@@ -74,7 +74,24 @@ class login:
                 trust_device=trust_device,
                 follow_redirects=False,
             )
-        except (BitSsoError, requests.RequestException, ValueError) as exc:
+        except requests.Timeout as exc:
+            raise login_error("统一身份认证请求超时，请稍后重试") from exc
+        except requests.ConnectionError as exc:
+            raise login_error("无法连接统一身份认证服务，请稍后重试") from exc
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status == 429:
+                message = "统一身份认证请求过于频繁，请稍后重试"
+            elif status is not None and status >= 500:
+                message = f"统一身份认证服务暂时不可用（HTTP {status}）"
+            elif status is not None:
+                message = f"统一身份认证请求失败（HTTP {status}）"
+            else:
+                message = "统一身份认证请求失败，请稍后重试"
+            raise login_error(message) from exc
+        except requests.RequestException as exc:
+            raise login_error("统一身份认证网络请求失败，请稍后重试") from exc
+        except (BitSsoError, ValueError) as exc:
             raise login_error(str(exc)) from exc
 
         callback = self._ticket_callback(result.response, result.ticket, callback_url)
