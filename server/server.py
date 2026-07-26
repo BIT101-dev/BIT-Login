@@ -27,6 +27,11 @@ from bit_login.service import (
 from bit_login.services.jwb import score, cjd
 from bit_login.services.jxzxehall import JxzxehallDataError, course, credit
 from server.auth import ChallengeError, SQLiteChallengeStore
+from server.registration_token import (
+    RegistrationAudienceError,
+    RegistrationTokenError,
+    issue_registration_token,
+)
 
 # Restored SQLite sessions may be consumed by a different worker than the one
 # that logged in, so every worker must initialize its process-local URL map.
@@ -97,6 +102,9 @@ class AuthStartRequest(BaseCredentials):
 class SmsCodeRequest(BaseModel):
     code: str
 
+class RegistrationTokenRequest(BaseModel):
+    audience: str
+
 class JwbScoreRequest(BaseCredentials):
     kksj: Optional[str] = None
     detail: bool = False
@@ -164,7 +172,8 @@ def _run_authentication(challenge_id, username, password, services):
 
 
 def _start_authentication_worker(username, password, services):
-    handle = challenge_store.create(services)
+    subject = str(username).strip()
+    handle = challenge_store.create(services, subject=subject)
 
     def authenticate() -> None:
         try:
@@ -311,6 +320,41 @@ def get_authentication_service_result(
     except ChallengeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"service": service, "data": result}
+
+
+@app.post(
+    "/api/auth/{challenge_id}/registration-token",
+    summary="Exchange an authenticated challenge for a registration JWT",
+)
+def exchange_registration_token(
+    challenge_id: str,
+    request: RegistrationTokenRequest,
+    x_challenge_token: Optional[str] = Header(default=None),
+):
+    state = _challenge_or_http(challenge_id, x_challenge_token)
+    if state["status"] != "authenticated":
+        raise HTTPException(
+            status_code=409,
+            detail=f"challenge is {state['status']}",
+        )
+    try:
+        token, expires_in = issue_registration_token(
+            state["subject"], challenge_id, request.audience
+        )
+    except RegistrationAudienceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RegistrationTokenError as exc:
+        logger.error("Registration JWT is unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="registration token service is not configured",
+        ) from exc
+    return {
+        "registration_token": token,
+        "token_type": "Bearer",
+        "expires_in": expires_in,
+        "audience": request.audience.strip(),
+    }
 
 
 @app.delete("/api/auth/{challenge_id}", summary="Delete an SSO challenge")

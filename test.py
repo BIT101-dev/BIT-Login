@@ -1,5 +1,78 @@
 import bit_login
 import os
+import time
+
+import requests
+
+
+def get_registration_jwt(
+    server_url,
+    username,
+    password,
+    audience,
+    *,
+    poll_interval=1.0,
+    timeout=300,
+):
+    """通过 server challenge 登录，并换取注册 JWT。"""
+    server_url = server_url.rstrip("/")
+    session = requests.Session()
+    response = session.post(
+        f"{server_url}/api/auth/start",
+        json={
+            "username": username,
+            "password": password,
+            "services": ["webvpn"],
+            "wait_seconds": 1,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    challenge = response.json()
+    challenge_id = challenge["challenge_id"]
+    access_token = challenge["access_token"]
+    headers = {"X-Challenge-Token": access_token}
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        status = challenge["status"]
+        if status == "authenticated":
+            response = session.post(
+                f"{server_url}/api/auth/{challenge_id}/registration-token",
+                headers=headers,
+                json={"audience": audience},
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()["registration_token"]
+
+        if status == "waiting_sms":
+            masked_phone = challenge.get("masked_phone", "绑定手机")
+            sms_code = input(f"请输入发送到 {masked_phone} 的短信验证码: ").strip()
+            response = session.post(
+                f"{server_url}/api/auth/{challenge_id}/sms",
+                headers=headers,
+                json={"code": sms_code},
+                timeout=30,
+            )
+            response.raise_for_status()
+            challenge = response.json()
+            continue
+
+        if status in {"failed", "expired", "cancelled"}:
+            error = challenge.get("error", status)
+            raise RuntimeError(f"server authentication failed: {error}")
+
+        time.sleep(poll_interval)
+        response = session.get(
+            f"{server_url}/api/auth/{challenge_id}",
+            headers=headers,
+            timeout=30,
+        )
+        response.raise_for_status()
+        challenge = response.json()
+
+    raise TimeoutError("server authentication timed out")
 
 username = ""
 password = ""
@@ -7,6 +80,15 @@ password = ""
 if not username and not password:
     username = os.getenv("BITUSERNAME")
     password = os.getenv("BITPASSWORD")
+
+print("========== 开始测试Server ==========")
+
+print(get_registration_jwt(
+    server_url="http://localhost:16384",
+    username=username,
+    password=password,
+    audience="bit101-main",
+))
 
 print("========== 开始测试登录模块 ==========")
 

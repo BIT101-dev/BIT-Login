@@ -105,7 +105,9 @@ class SQLiteChallengeStore:
             ready_ttl=int(os.getenv("AUTH_SESSION_TTL", "1800")),
         )
 
-    def create(self, services: Iterable[str]) -> ChallengeHandle:
+    def create(
+        self, services: Iterable[str], *, subject: str = ""
+    ) -> ChallengeHandle:
         self.cleanup()
         challenge_id = secrets.token_urlsafe(18)
         access_token = secrets.token_urlsafe(32)
@@ -116,13 +118,14 @@ class SQLiteChallengeStore:
                 INSERT INTO auth_challenges (
                     challenge_id, token_hash, status, requested_services,
                     ready_services, masked_phone, sms_purpose, error,
-                    created_at, expires_at
-                ) VALUES (?, ?, 'running', ?, '[]', '', '', '', ?, ?)
+                    subject, created_at, expires_at
+                ) VALUES (?, ?, 'running', ?, '[]', '', '', '', ?, ?, ?)
                 """,
                 (
                     challenge_id,
                     self._token_hash(access_token),
                     self._encode_json(list(services)),
+                    str(subject),
                     now,
                     now + self.pending_ttl,
                 ),
@@ -395,6 +398,7 @@ class SQLiteChallengeStore:
                     masked_phone TEXT NOT NULL,
                     sms_purpose TEXT NOT NULL,
                     error TEXT NOT NULL,
+                    subject TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     expires_at REAL NOT NULL
                 );
@@ -418,6 +422,23 @@ class SQLiteChallengeStore:
                 );
                 """
             )
+            challenge_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(auth_challenges)"
+                )
+            }
+            if "subject" not in challenge_columns:
+                try:
+                    connection.execute(
+                        "ALTER TABLE auth_challenges "
+                        "ADD COLUMN subject TEXT NOT NULL DEFAULT ''"
+                    )
+                except sqlite3.OperationalError as exc:
+                    # Another Gunicorn worker may have completed the same
+                    # migration after this worker read the old schema.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:

@@ -9,4 +9,6 @@ gunicorn.ctl
 *.db
 *.db-wal
 *.db-shm
+registration-private.pem
+registration-public.pem
 .vscode/
