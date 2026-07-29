@@ -1,9 +1,0 @@
-fastapi>=0.68.0
-uvicorn>=0.15.0
-gunicorn>=20.1.0
-requests>=2.25.0
-beautifulsoup4>=4.9.0
-pydantic>=1.8.0
-cryptography==44.0.1
-pycryptodome>=3.18.0
-ddddocr>=1.5.0
