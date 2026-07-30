@@ -26,14 +26,16 @@ class ConfigTest {
         assertEquals("https://ibit.yanhekt.cn/proxy/v1/cas/callback", Config.Urls.campus["ibit_cb"])
         assertEquals("https://cbiz.yanhekt.cn/v1/cas/callback", Config.Urls.campus["yanhekt_cb"])
         assertNotNull(Config.Urls.campus["jxzxehall_auth"])
-        assertEquals(15, Config.Urls.campus.size)
+        assertEquals("https://lexue.bit.edu.cn", Config.Urls.campus["lexue"])
+        assertEquals(16, Config.Urls.campus.size)
     }
 
     @Test
     fun `Urls webvpn has expected keys`() {
         assertEquals("https://webvpn.bit.edu.cn", Config.Urls.webvpn["webvpn_origin"])
         assertEquals("https://webvpn.bit.edu.cn/login?cas_login=true", Config.Urls.webvpn["webvpn_cb"])
-        assertEquals(17, Config.Urls.webvpn.size)
+        assertNotNull(Config.Urls.webvpn["lexue"])
+        assertEquals(18, Config.Urls.webvpn.size)
     }
 
     @Test
