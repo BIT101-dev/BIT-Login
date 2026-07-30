@@ -65,11 +65,17 @@ class Classroom(private val session: HttpClient) {
             "linkOpt" to "AND", "value" to classroomName,
         )
 
+        // 先访问应用首页以初始化应用会话, 否则后端可能返回 401
+        val indexResponse = session.get(
+            "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/kxjas/*default/index.do",
+            headers = Config.Headers.jxzxehall,
+        )
+
         val allClassrooms = mutableListOf<Map<String, Any?>>()
         val pageSize = 50
         var pageNumber = 1
 
-        val url = "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/kxjas/modules/kxjas/cxjsqk.do"
+        val url = "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/kxjas/modules/kxjas/cxjsqk.do?vpn-12-o2-jxzxehallapp.bit.edu.cn"
         while (true) {
             val payload = mapOf(
                 "XNXQDM" to effectiveSemester!!,
@@ -81,9 +87,19 @@ class Classroom(private val session: HttpClient) {
                 "pageSize" to pageSize.toString(),
                 "pageNumber" to pageNumber.toString(),
             )
-            val response = session.post(url, data = payload)
+            val response = session.post(url, headers = Config.Headers.base, data = payload)
             if (response.status != 200) {
-                throw RuntimeException("请求失败，HTTP 状态码: ${response.status}")
+                val sentCookies = session.cookieStorage.get(io.ktor.http.Url(url)).joinToString(",") { it.name }
+                val storedCookies = session.cookieStorage.snapshot().joinToString(",") { "${it.name}@${it.domain}:${it.path}" }
+                throw RuntimeException(
+                    "请求失败，HTTP 状态码: ${response.status}, " +
+                        "URL: $url, " +
+                        "IndexStatus: ${indexResponse.status}, " +
+                        "Location: ${response.location()}, " +
+                        "SentCookies: $sentCookies, " +
+                        "StoredCookies: $storedCookies, " +
+                        "Body: ${response.bodyText.take(800)}"
+                )
             }
             val data = Json.parseToJsonElement(response.bodyText).jsonObject
             val pageData = data["datas"]?.jsonObject?.get("cxjsqk")?.jsonObject
@@ -140,9 +156,9 @@ class Classroom(private val session: HttpClient) {
     }
 
     private suspend fun getCurrentTermInfo(): Map<String, Any?>? {
-        val url = "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/kxjas/modules/kxjas/dqxnxqcx.do"
+        val url = "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/kxjas/modules/kxjas/dqxnxqcx.do?vpn-12-o2-jxzxehallapp.bit.edu.cn"
         return try {
-            val data = Json.parseToJsonElement(session.post(url).bodyText).jsonObject
+            val data = Json.parseToJsonElement(session.post(url, headers = Config.Headers.base).bodyText).jsonObject
             val rows = data["datas"]?.jsonObject?.get("dqxnxqcx")?.jsonObject?.get("rows")?.jsonArray
             rows?.firstOrNull()?.jsonObject?.let { row ->
                 mapOf(
@@ -156,9 +172,9 @@ class Classroom(private val session: HttpClient) {
 
     private suspend fun getWeekInfo(dateStr: String, xn: String?, xq: String?): Map<String, Any?>? {
         if (xn == null || xq == null) return null
-        val url = "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/kxjas/modules/kxjas/rqzhzcjc.do"
+        val url = "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/kxjas/modules/kxjas/rqzhzcjc.do?vpn-12-o2-jxzxehallapp.bit.edu.cn"
         return try {
-            val resp = session.post(url, data = mapOf("RQ" to dateStr, "XN" to xn, "XQ" to xq))
+            val resp = session.post(url, headers = Config.Headers.base, data = mapOf("RQ" to dateStr, "XN" to xn, "XQ" to xq))
             val data = Json.parseToJsonElement(resp.bodyText).jsonObject
             data["datas"]?.jsonObject?.get("rqzhzcjc")?.jsonObject?.let { obj ->
                 mapOf(

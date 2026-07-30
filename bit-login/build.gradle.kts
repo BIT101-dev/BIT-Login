@@ -64,3 +64,14 @@ kotlin {
         }
     }
 }
+
+tasks.register<JavaExec>("classroomManualTest") {
+    group = "verification"
+    description = "交互式测试空闲教室接口可用性（运行时输入统一身份认证凭据）"
+    val jvmTestCompilation = kotlin.targets.getByName("jvm").compilations.getByName("test")
+    dependsOn(jvmTestCompilation.compileTaskProvider)
+    classpath = jvmTestCompilation.output.allOutputs +
+            (jvmTestCompilation.runtimeDependencyFiles ?: files())
+    mainClass.set("cn.bit101.bitlogin.manual.ClassroomManualTestKt")
+    standardInput = System.`in`
+}
