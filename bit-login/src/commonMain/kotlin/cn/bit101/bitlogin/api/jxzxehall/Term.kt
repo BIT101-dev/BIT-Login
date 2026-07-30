@@ -13,7 +13,8 @@ import cn.bit101.bitlogin.http.HttpClient
 class Term(private val session: HttpClient) {
 
     suspend fun getCurrentTerm(): String {
-        val url = "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/wdkbby/modules/jshkcb/dqxnxq.do"
+        initAppSession()
+        val url ="${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/wdkbby/modules/jshkcb/dqxnxq.do"
         val res = responseJson(session.get(url, headers = Config.Headers.base), "当前学期")
         return try {
             res["datas"]!!.jsonObject["dqxnxq"]!!.jsonObject["rows"]!!.jsonArray[0].jsonObject["DM"]!!.jsonPrimitive.content
@@ -23,7 +24,8 @@ class Term(private val session: HttpClient) {
     }
 
     suspend fun getTermList(): List<String> {
-        val url = "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/wdkbby/modules/jshkcb/xnxqcx.do"
+        initAppSession()
+        val url ="${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/wdkbby/modules/jshkcb/xnxqcx.do"
         val res = responseJson(session.get(url, headers = Config.Headers.base), "学期列表")
         val rows = try {
             res["datas"]!!.jsonObject["xnxqcx"]!!.jsonObject["rows"]!!.jsonArray
@@ -34,7 +36,8 @@ class Term(private val session: HttpClient) {
     }
 
     suspend fun getWeekAndDate(term: String, week: Int = 1): List<Map<String, String>> {
-        val payload = Json.encodeToString(
+        initAppSession()
+        val payload =Json.encodeToString(
             kotlinx.serialization.serializer<Map<String, String>>(),
             mapOf("XNXQDM" to term, "ZC" to week.toString()),
         )
@@ -54,5 +57,13 @@ class Term(private val session: HttpClient) {
                 "date" to (obj["RQ"]?.jsonPrimitive?.content ?: ""),
             )
         }
+    }
+
+    // 先访问应用首页以初始化应用会话, 否则后端可能返回异常
+    private suspend fun initAppSession() {
+        session.get(
+            "${Config.Urls.active["jxzxehall_app"]}/jwapp/sys/wdkbby/*default/index.do",
+            headers = Config.Headers.jxzxehall,
+        )
     }
 }
