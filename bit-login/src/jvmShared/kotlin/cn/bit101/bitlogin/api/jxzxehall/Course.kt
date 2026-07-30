@@ -1,7 +1,6 @@
 package cn.bit101.bitlogin.api.jxzxehall
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
@@ -9,7 +8,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import cn.bit101.bitlogin.Config
 import cn.bit101.bitlogin.http.HttpClient
-import cn.bit101.bitlogin.http.HttpResponse
 import java.time.LocalDateTime
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -143,23 +141,3 @@ class Course(private val session: HttpClient) {
 }
 
 private fun JsonPrimitive.contentOrNullSafe(): String? = content
-
-/**
- * Mirrors Python `_response_json(response, label)`: validate HTTP status and
- * JSON-decode the body, raising [JxzxehallDataError] (→ HTTP 422) on failure.
- */
-internal fun responseJson(response: HttpResponse, label: String): JsonObject {
-    if (response.status !in 200..299) {
-        throw JxzxehallDataError("教学中心${label}接口返回 HTTP ${response.status}")
-    }
-    val value = try {
-        Json.parseToJsonElement(response.bodyText)
-    } catch (e: Throwable) {
-        val contentType = (response.headers["Content-Type"] ?: "unknown").split(";").firstOrNull()?.trim() ?: "unknown"
-        throw JxzxehallDataError("教学中心${label}接口未返回 JSON(类型 $contentType);无法解析")
-    }
-    if (value !is JsonObject) {
-        throw JxzxehallDataError("教学中心${label}接口返回了无效数据")
-    }
-    return value
-}
