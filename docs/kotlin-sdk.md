@@ -221,6 +221,39 @@ suspend fun getOccupancy(
 - 未同时指定 `semester` 与 `week` 时，SDK 自动请求当前学期与周次。
 - 每间教室返回 `name`、`building_code`、`type`、`seats`、可选 `coordinates` 和 `status`。`status` 以第 1 至 13 节为键，值包含 `state`、`start`、`end`。
 
+## 乐学业务 API
+
+类：`cn.bit101.bitlogin.api.lexue.LexueCalendar`
+
+乐学 (Moodle) 没有独立的门面登录器，直接用 `SsoLogin` 登录后，把带 Cookie 的 `session` 传入即可。SSO 的 `callbackUrl` 应指向乐学登录入口 `{base}/login/index.php`。
+
+```kotlin
+import cn.bit101.bitlogin.Config
+import cn.bit101.bitlogin.NetworkEnv
+import cn.bit101.bitlogin.api.lexue.LexueCalendar
+import cn.bit101.bitlogin.login.SsoLogin
+
+suspend fun exportCalendar(username: String, password: String) {
+    NetworkEnv.ensureInitialized()
+    val base = Config.Urls.active["lexue"] ?: error("lexue 地址未配置")
+    val sso = SsoLogin()
+    sso.login(username, password, callbackUrl = "$base/login/index.php")
+    val calendar = LexueCalendar(sso.session)
+    val events = calendar.getCalendar()
+    println(events)
+}
+```
+
+| 方法 | 返回值 | 说明 |
+|---|---|---|
+| `getCalendarUrl()` | `String` | 建立 Moodle 会话并导出日历订阅 URL（含 `authtoken`）。 |
+| `getCalendar(url: String)` | `List<CalendarEvent>` | 拉取并解析 ICS 订阅源。 |
+| `getCalendar()` | `List<CalendarEvent>` | 等价于 `getCalendar(getCalendarUrl())`。 |
+
+- 会话建立会跟随乐学的统一身份认证 gateway 重定向链（`/login/index.php → authserver → sso CAS gateway → 首页`）；只要会话内已有 SSO Cookie（`SESSION`、`SOURCEID_TGC` 等）即静默重登，无需再次输入密码。
+- 日历订阅 URL 包含 `authtoken`，可直接用于日历 App 长期订阅。
+- `CalendarEvent` 字段：`uid`、`event`、`description`、`course`、`time`（`LocalDateTime`，ICS 的 UTC 时间已转换为东八区）。
+
 ## HTTP 会话接口
 
 类：`cn.bit101.bitlogin.http.HttpClient`。这是 SDK 封装的持久 Cookie HTTP 会话，也可用于已登录服务的扩展请求。

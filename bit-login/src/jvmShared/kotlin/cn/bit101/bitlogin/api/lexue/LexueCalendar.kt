@@ -20,10 +20,11 @@ class LexueCalendar(private val session: HttpClient) {
     )
 
     suspend fun getCalendarUrl(): String {
-        val base = Config.Urls.active["lexue"]
+        val base = Config.Urls.active["lexue"] ?: throw RuntimeException("lexue 地址未配置")
 
-        val indexHtml = session.get("$base/").bodyText
-        val sesskey = Regex("[\"']sesskey[\"']:[\"']([^\"']+?)[\"']").find(indexHtml)?.groupValues?.get(1)
+        // 真实登录流程: 以 SSO service 页 {base}/login/index.php 为入口建立 Moodle 会话
+        val indexHtml = establishMoodleSession(base)
+        val sesskey = extractSesskey(indexHtml)
             ?: throw RuntimeException("获取乐学 sesskey 失败，可能是未登录或 Cookie 已过期")
 
         val exportHtml = session.post(
@@ -37,11 +38,44 @@ class LexueCalendar(private val session: HttpClient) {
             ),
         ).bodyText
 
-        // 通过 calendarurl class 查找日历订阅链接
-        val div = Regex("""class="calendarurl"[^>]*>([\s\S]*?)</""").find(exportHtml)?.groupValues?.get(1)
+        return extractCalendarUrl(exportHtml)
             ?: throw RuntimeException("获取日历订阅链接失败")
-        return div.substring(div.indexOf("http")).trim()
     }
+
+    /**
+     * 建立乐学 (Moodle) 会话，返回已登录首页 HTML。
+     *
+     * 真实流程: GET {base}/login/index.php (SSO service 页) 触发整条重定向链
+     * `/login/index.php → login.bit.edu.cn/authserver → sso.bit.edu.cn CAS gateway(ticket)
+     * → /login/index.php → /login/index.php?testsession → /`, 最后落在首页。
+     * 链路自带 gateway=true, 只要会话内已有统一身份认证 Cookie 即静默重登。
+     * 以 X-MOODLEUSER 响应头或首页 M.cfg.sesskey 校验登录成功。
+     */
+    private suspend fun establishMoodleSession(base: String): String {
+        val home = session.get("$base/login/index.php")
+        if (home.headers["X-MOODLEUSER"] == null && extractSesskey(home.bodyText) == null) {
+            throw RuntimeException("乐学登录失败：统一身份认证会话未建立或已过期，请重新登录")
+        }
+        return home.bodyText
+    }
+
+    private fun extractSesskey(html: String): String? =
+        Regex("[\"']sesskey[\"']:[\"']([^\"']+?)[\"']").find(html)?.groupValues?.get(1)
+
+    private fun extractCalendarUrl(html: String): String? {
+        // 真实页面为 <div class="generalbox calendarurl">日历网址： https://…&amp;…</div>，
+        // URL 是纯文本（带 HTML 实体），不是 value/href 属性。
+        val block = Regex("""class="[^"]*calendarurl[^"]*"[^>]*>([\s\S]*?)</""").find(html)?.groupValues?.get(1) ?: return null
+        val url = Regex("""value="(https?://[^"]+)"""").find(block)?.groupValues?.get(1)
+            ?: Regex("""href="(https?://[^"]+)"""").find(block)?.groupValues?.get(1)
+            ?: block.indexOf("http").takeIf { it >= 0 }?.let { block.substring(it).trim() }
+            ?: return null
+        return unescapeHtml(url)
+    }
+
+    private fun unescapeHtml(value: String): String =
+        value.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"")
+            .replace("&#039;", "'").replace("&#39;", "'").replace("&amp;", "&")
 
     suspend fun getCalendar(url: String): List<CalendarEvent> {
         val ics = session.get(url).bodyText

@@ -57,7 +57,7 @@ object Config {
             "lib_auth" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421e3f240882b396a1e7c019de29d51367b27a4/api/cas/user",
             "lib_referer" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421e3f240882b396a1e7c019de29d51367b27a4/h5/index.html",
             "lib_origin" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421e3f240882b396a1e7c019de29d51367b27a4",
-            "lexue" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421fcf25989227e6a596a468ca88d1b203b",
+            "lexue" to "https://lexue.bit.edu.cn",
         )
 
         /** Populated by [cn.bit101.bitlogin.NetworkEnv]. campus|webvpn merged with base. */
