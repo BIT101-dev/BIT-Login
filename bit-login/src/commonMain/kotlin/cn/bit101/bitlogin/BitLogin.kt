@@ -7,6 +7,7 @@ import cn.bit101.bitlogin.service.IbitLogin
 import cn.bit101.bitlogin.service.JwbCjdLogin
 import cn.bit101.bitlogin.service.JwbLogin
 import cn.bit101.bitlogin.service.JxzxehallLogin
+import cn.bit101.bitlogin.service.LexueLogin
 import cn.bit101.bitlogin.service.LibraryLogin
 import cn.bit101.bitlogin.service.WebVpnLogin
 import cn.bit101.bitlogin.service.YanhektLogin
@@ -29,6 +30,7 @@ object BitLogin {
     fun ibitLogin(): IbitLogin = IbitLogin()
     fun yanhektLogin(): YanhektLogin = YanhektLogin()
     fun libraryLogin(): LibraryLogin = LibraryLogin()
+    fun lexueLogin(): LexueLogin = LexueLogin()
     fun dektLogin(): DektLogin = DektLogin()
     fun cxcyLogin(): CxcyLogin = CxcyLogin()
 }

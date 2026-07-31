@@ -42,6 +42,11 @@ class JxzxehallLogin(sso: SsoLogin = SsoLogin()) : BaseLogin(sso) {
         sso.session.get(activeUrl("jxzxehall_app_base"))
         sso.session.get(activeUrl("jxzxehall_config"), headers = headers)
 
+        // 尽力而为地为乐学 (Moodle) 建立独立会话, 使 App 持久化的 Cookie 包含
+        // MoodleSession, 否则 LexueCalendar 每次都要依赖 CAS 静默登录, 会话过期即失败。
+        // 失败不影响 jxzxehall 主登录。
+        LexueLogin(sso).establishSession()
+
         return cookiesResult()
     }
 }
