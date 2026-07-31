@@ -12,7 +12,7 @@ bit-login-kt/
 
 | 模块 | 说明 |
 |---|---|
-| `bit-login` | 完整认证逻辑 + 业务接口（成绩、课程表、空闲教室等） |
+| `bit-login` | 完整认证逻辑 + 业务接口（成绩、课程表、空闲教室、乐学日历等） |
 | `bit-login-server` | Ktor 2.x 服务，提供与 Python 版 1:1 的 RESTful 接口 |
 
 ## 📥 环境要求
@@ -32,6 +32,14 @@ bit-login-kt/
 ./gradlew build              # 全量构建
 ./gradlew test               # 跑全部测试（util + config + 解析 + 服务端健康检查）
 ./gradlew :bit-login:test    # 仅 SDK 测试
+```
+
+交互式手动测试（需真实凭据，运行时输入，支持短信/图形验证码）：
+
+```bash
+./gradlew :bit-login:classroomManualTest    # 空闲教室接口可用性
+./gradlew :bit-login:lexueCalendarManualTest # 乐学日历导出接口可用性
+./gradlew :bit-login:scoreManualTest        # 教务系统成绩查询接口可用性
 ```
 
 ### 用 SDK 完成一次登录
