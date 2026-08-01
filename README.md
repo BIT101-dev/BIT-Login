@@ -1,6 +1,6 @@
-# bit-login-kt
+# BIT-Login
 
-[北京理工大学统一身份认证登录库](../bit-login) 的 Kotlin 移植版。monorepo 结构：纯 SDK 模块 + Ktor RESTful 服务。
+[BIT-Login-Python](https://github.com/BIT101-dev/BIT-Login-Python) 的 Kotlin 移植版。monorepo 结构：纯 SDK 模块 + Ktor RESTful 服务。
 
 ## 🎯 项目结构
 
