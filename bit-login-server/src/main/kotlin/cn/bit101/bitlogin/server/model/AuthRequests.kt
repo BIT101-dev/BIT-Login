@@ -6,10 +6,15 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class AuthStartRequest(
     val username: String,
-    val password: String,
+    val password: String = "",
+    val phone: String = "",
+    @SerialName("auth_method") val authMethod: String = "password",
     val services: List<String> = listOf("jwb"),
     @SerialName("wait_seconds") val waitSeconds: Double = 1.0,
 )
+
+@Serializable
+data class CaptchaCodeRequest(val code: String)
 
 @Serializable
 data class SmsCodeRequest(val code: String)

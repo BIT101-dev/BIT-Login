@@ -66,7 +66,14 @@ class AuthServiceExecutor(
         if (username.isBlank() || password.isEmpty()) {
             throw HttpException(400, "username/password or an authenticated Bearer challenge is required")
         }
-        val handle = authWorker.startAuthentication(username, password, listOf(serviceName), username.trim())
+        val handle = authWorker.startAuthentication(
+            username = username,
+            password = password,
+            phone = "",
+            authMethod = "password",
+            services = listOf(serviceName),
+            subject = username.trim(),
+        )
         challengeStore.waitUntilActionable(handle.challengeId, handle.accessToken, 1_000)
         val snapshot = challengeStore.snapshot(handle.challengeId, handle.accessToken, includeAccessToken = true)
         if (snapshot["status"] != "authenticated") {

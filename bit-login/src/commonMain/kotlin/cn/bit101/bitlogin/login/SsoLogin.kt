@@ -19,6 +19,7 @@ class SsoLogin(
     session: HttpClient? = null,
     captchaSolver: CaptchaSolver? = null,
     smsCodeCallback: SmsCodeCallback? = null,
+    private val primarySmsPhone: String? = null,
 ) {
     var session: HttpClient = (session ?: HttpClient()).also { s ->
             // Always apply browser default headers, even on externally-provided
@@ -57,15 +58,27 @@ class SsoLogin(
     ): LoginResult {
         if (callbackUrl.isBlank()) throw LoginError("callback_url must not be empty")
         return try {
-            val result = client.loginPassword(
-                username = username,
-                password = password,
-                service = callbackUrl,
-                smsCodeCallback = smsCodeCallback ?: this.smsCodeCallback,
-                captchaSolver = captchaSolver ?: this.captchaSolver,
-                trustDevice = trustDevice,
-                followRedirects = false,
-            )
+            val result = if (primarySmsPhone.isNullOrBlank()) {
+                client.loginPassword(
+                    username = username,
+                    password = password,
+                    service = callbackUrl,
+                    smsCodeCallback = smsCodeCallback ?: this.smsCodeCallback,
+                    captchaSolver = captchaSolver ?: this.captchaSolver,
+                    trustDevice = trustDevice,
+                    followRedirects = false,
+                )
+            } else {
+                val callback = smsCodeCallback ?: this.smsCodeCallback
+                    ?: throw cn.bit101.bitlogin.sso.SmsVerificationError("SMS code callback is not configured")
+                client.loginSms(
+                    phone = primarySmsPhone,
+                    smsCodeCallback = callback,
+                    captchaSolver = captchaSolver ?: this.captchaSolver,
+                    service = callbackUrl,
+                    followRedirects = false,
+                )
+            }
             val callback = ticketCallback(result, callbackUrl)
             LoginResult(
                 cookieJson = session.cookieMap(),

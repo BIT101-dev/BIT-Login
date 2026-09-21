@@ -22,6 +22,7 @@ import cn.bit101.bitlogin.server.auth.RegistrationAudienceError
 import cn.bit101.bitlogin.server.auth.RegistrationToken
 import cn.bit101.bitlogin.server.auth.RegistrationTokenError
 import cn.bit101.bitlogin.server.model.AuthStartRequest
+import cn.bit101.bitlogin.server.model.CaptchaCodeRequest
 import cn.bit101.bitlogin.server.model.RegistrationTokenRequest
 import cn.bit101.bitlogin.server.model.SmsCodeRequest
 import cn.bit101.bitlogin.server.plugins.HttpException
@@ -68,7 +69,24 @@ fun Route.authRoutes(worker: AuthWorker, store: ChallengeStore) {
             if (req.waitSeconds !in 0.0..5.0) {
                 throw HttpException(422, "wait_seconds must be between 0 and 5")
             }
-            val handle = worker.startAuthentication(req.username, req.password, services, req.username.trim())
+            if (req.authMethod !in setOf("password", "sms")) {
+                throw HttpException(422, "auth_method must be password or sms")
+            }
+            if (req.username.isBlank()) throw HttpException(422, "username is required")
+            if (req.authMethod == "password" && req.password.isEmpty()) {
+                throw HttpException(422, "password is required for password authentication")
+            }
+            if (req.authMethod == "sms" && !Regex("^1[0-9]{10}$").matches(req.phone.trim())) {
+                throw HttpException(422, "phone must be an 11-digit mainland China mobile number for SMS authentication")
+            }
+            val handle = worker.startAuthentication(
+                req.username.trim(),
+                req.password,
+                req.phone.trim(),
+                req.authMethod,
+                services,
+                req.username.trim(),
+            )
             val waitMs = (req.waitSeconds * 1000).toLong()
             store.waitUntilActionable(handle.challengeId, handle.accessToken, waitMs)
             call.respond(
@@ -93,6 +111,20 @@ fun Route.authRoutes(worker: AuthWorker, store: ChallengeStore) {
                 store.submitSms(challengeId, token ?: "", req.code)
             } catch (e: ChallengeError) {
                 throw HttpException(409, e.message ?: "SMS error")
+            }
+            store.waitUntilActionable(challengeId, token ?: "", 1000)
+            call.respond(store.snapshot(challengeId, token ?: "").toJsonObject())
+        }
+
+        post("/{challengeId}/captcha") {
+            val challengeId = call.parameters["challengeId"]!!
+            val token = call.request.headers["X-Challenge-Token"]
+            val req = call.receive<CaptchaCodeRequest>()
+            challengeOrHttp(store, challengeId, token)
+            try {
+                store.submitCaptcha(challengeId, token ?: "", req.code)
+            } catch (e: ChallengeError) {
+                throw HttpException(409, e.message ?: "captcha error")
             }
             store.waitUntilActionable(challengeId, token ?: "", 1000)
             call.respond(store.snapshot(challengeId, token ?: "").toJsonObject())

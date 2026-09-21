@@ -199,6 +199,27 @@ class BitSsoClientTest {
     }
 
     @Test
+    fun `primary SMS login can return service ticket without following redirect`() = runTest {
+        val transport = ScriptedTransport(
+            response(200, loginHtml()),
+            HttpResponse(200, emptyMap(), "", "https://sso.test/generate", byteArrayOf(1, 2, 3)),
+            response(200, "{\"code\":200}"),
+            response(200, "{\"code\":200}"),
+            response(302, "", "https://service.test/callback?ticket=ST-PRIMARY-SMS"),
+        )
+        val result = BitSsoClient("https://sso.test", transport, captchaSolver = { _, _ -> "42" })
+            .loginSms(
+                phone = "13800138000",
+                smsCodeCallback = { "123456" },
+                service = "https://service.test/callback",
+                followRedirects = false,
+            )
+        assertEquals("ST-PRIMARY-SMS", result.ticket)
+        assertEquals("smsLogin", transport.requests.last().form?.get("type"))
+        assertEquals("123456", transport.requests.last().form?.get("password"))
+    }
+
+    @Test
     fun `login_sms without solver throws CaptchaError`() = runTest {
         val transport = ScriptedTransport(
             response(200, loginHtml()),

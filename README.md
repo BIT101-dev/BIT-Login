@@ -86,8 +86,9 @@ suspend fun demo() {
 | 方法 | 路径 | 请求体 | 响应 |
 |---|---|---|---|
 | GET  | `/` | — | `{"message":"BIT Login Services API is running"}` |
-| POST | `/api/auth/start` | `{username,password,services?,wait_seconds?}` | 202 `{"challenge_id","access_token","status",...}` |
+| POST | `/api/auth/start` | `{username,password?,phone?,auth_method?,services?,wait_seconds?}` | 202 `{"challenge_id","access_token","status",...}` |
 | GET  | `/api/auth/{challenge_id}` | `X-Challenge-Token` header | `{"challenge_id","status",...}` |
+| POST | `/api/auth/{challenge_id}/captcha` | header + `{code}` | 最新状态 snapshot |
 | POST | `/api/auth/{challenge_id}/sms` | header + `{code}` | 最新状态 snapshot |
 | GET  | `/api/auth/{challenge_id}/services/{service}` | `X-Challenge-Token` header | `{"service","data":{...}}` |
 | POST | `/api/auth/{challenge_id}/registration-token` | header + `{audience}` | `{"registration_token","token_type","expires_in","audience"}` |
@@ -107,14 +108,15 @@ suspend fun demo() {
 
 ### 认证挑战流程（`/api/auth/*`）
 
-异步 SSO 认证支持短信二次验证，使用 SQLite WAL 持久化 challenge 状态：
+异步 SSO 认证支持密码登录、手机号短信登录、图形验证码和短信二次验证，使用 SQLite WAL 持久化 challenge 状态。`auth_method` 默认为 `password`；使用 `sms` 时同时传入统一身份认证绑定的 `phone`：
 
 ```
 1. POST /api/auth/start    → 202 {challenge_id, access_token, status:"running"}
-2. GET  /api/auth/{id}     → {status:"waiting_sms", masked_phone:"138****8000"}
-3. POST /api/auth/{id}/sms → {status:"authenticated"} 或 {status:"waiting_sms"}
-4. GET  /api/auth/{id}/services/jwb → {"service":"jwb","data":{...}}
-5. DELETE /api/auth/{id}   → {"status":"deleted"}
+2. GET  /api/auth/{id}     → {status:"waiting_captcha", captcha_image:"data:image/png;base64,..."}
+3. POST /api/auth/{id}/captcha → {status:"waiting_sms", masked_phone:"138****8000"}
+4. POST /api/auth/{id}/sms → {status:"authenticated"} 或 {status:"waiting_sms"}
+5. GET  /api/auth/{id}/services/jwb → {"service":"jwb","data":{...}}
+6. DELETE /api/auth/{id}   → {"status":"deleted"}
 ```
 
 ### Bearer Challenge 复用 Session

@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import cn.bit101.bitlogin.http.HttpClient
+import cn.bit101.bitlogin.sso.CaptchaContext
 import cn.bit101.bitlogin.sso.SmsCodeContext
 
 class ChallengeStoreTest {
@@ -45,6 +46,40 @@ class ChallengeStoreTest {
         delay(200)
         store.submitSms(handle.challengeId, handle.accessToken, "123456")
         assertEquals("123456", deferred.await())
+    }
+
+    @Test
+    fun `submit captcha code and waitForCaptcha picks it up`() = runBlocking {
+        val store = newStore()
+        val handle = store.create(listOf("jxzxehall"))
+        val deferred = async {
+            store.waitForCaptcha(handle.challengeId, byteArrayOf(1, 2, 3), CaptchaContext("sms"))
+        }
+        delay(200)
+        val snapshot = store.snapshot(handle.challengeId, handle.accessToken)
+        assertEquals("waiting_captcha", snapshot["status"])
+        assertEquals("sms", snapshot["captcha_purpose"])
+        assertEquals("data:image/png;base64,AQID", snapshot["captcha_image"])
+        store.submitCaptcha(handle.challengeId, handle.accessToken, "a7B2")
+        assertEquals("a7B2", deferred.await())
+    }
+
+    @Test
+    fun `captcha code rejects whitespace and duplicate submissions`() = runBlocking {
+        val store = newStore()
+        val handle = store.create(listOf("jxzxehall"))
+        val job = launch {
+            store.waitForCaptcha(handle.challengeId, byteArrayOf(1), CaptchaContext("sms"))
+        }
+        delay(200)
+        assertThrows(ChallengeError::class.java) {
+            kotlinx.coroutines.runBlocking { store.submitCaptcha(handle.challengeId, handle.accessToken, " ") }
+        }
+        store.submitCaptcha(handle.challengeId, handle.accessToken, "1234")
+        assertThrows(ChallengeError::class.java) {
+            kotlinx.coroutines.runBlocking { store.submitCaptcha(handle.challengeId, handle.accessToken, "5678") }
+        }
+        job.cancel()
     }
 
     @Test
