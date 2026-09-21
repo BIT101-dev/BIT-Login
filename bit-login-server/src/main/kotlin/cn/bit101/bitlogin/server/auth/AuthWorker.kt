@@ -16,6 +16,7 @@ import cn.bit101.bitlogin.service.LibraryLogin
 import cn.bit101.bitlogin.service.WebVpnLogin
 import cn.bit101.bitlogin.service.YanhektLogin
 import cn.bit101.bitlogin.sso.SmsCodeCallback
+import cn.bit101.bitlogin.sso.CaptchaSolver
 import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger(AuthWorker::class.java)
@@ -42,11 +43,18 @@ class AuthWorker(
     private val socketTimeoutMs: Long = 25_000L,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + kotlinx.coroutines.Dispatchers.IO),
 ) {
-    suspend fun startAuthentication(username: String, password: String, services: List<String>, subject: String): ChallengeHandle {
+    suspend fun startAuthentication(
+        username: String,
+        password: String,
+        phone: String,
+        authMethod: String,
+        services: List<String>,
+        subject: String,
+    ): ChallengeHandle {
         val handle = store.create(services, subject)
         scope.launch {
             try {
-                runAuthentication(handle.challengeId, username, password, services)
+                runAuthentication(handle.challengeId, username, password, phone, authMethod, services)
             } catch (e: Exception) {
                 store.fail(handle.challengeId, e)
             }
@@ -54,9 +62,17 @@ class AuthWorker(
         return handle
     }
 
-    private suspend fun runAuthentication(challengeId: String, username: String, password: String, services: List<String>) {
+    private suspend fun runAuthentication(
+        challengeId: String,
+        username: String,
+        password: String,
+        phone: String,
+        authMethod: String,
+        services: List<String>,
+    ) {
         val totalStart = System.currentTimeMillis()
         val smsCallback: SmsCodeCallback = { ctx -> store.waitForSms(challengeId, ctx) }
+        val captchaSolver: CaptchaSolver = { image, ctx -> store.waitForCaptcha(challengeId, image, ctx) }
         var seedSession: HttpClient? = null
         for (serviceName in services) {
             val serviceStart = System.currentTimeMillis()
@@ -64,7 +80,12 @@ class AuthWorker(
             seedSession?.cookieDetails()?.forEach { c ->
                 session.addCookie(c.name, c.value, c.domain, c.path, c.secure)
             }
-            val sso = SsoLogin(session = session, smsCodeCallback = smsCallback)
+            val sso = SsoLogin(
+                session = session,
+                smsCodeCallback = smsCallback,
+                captchaSolver = captchaSolver,
+                primarySmsPhone = phone.takeIf { authMethod == "sms" && seedSession == null },
+            )
             val factory = AuthServices.factories[serviceName]
                 ?: throw ChallengeError("unknown service: $serviceName")
             val login = factory(sso)

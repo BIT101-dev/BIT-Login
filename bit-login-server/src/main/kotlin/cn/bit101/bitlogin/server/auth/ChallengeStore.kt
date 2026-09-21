@@ -21,6 +21,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import cn.bit101.bitlogin.http.HttpClient
+import cn.bit101.bitlogin.sso.CaptchaContext
 import cn.bit101.bitlogin.sso.SmsCodeContext
 
 class ChallengeStore(
@@ -125,11 +126,80 @@ class ChallengeStore(
             result["masked_phone"] = (state["masked_phone"] as? String ?: "").ifBlank { "绑定手机" }
             result["sms_purpose"] = (state["sms_purpose"] as? String ?: "").ifBlank { "password_second_factor" }
         }
+        if (state["status"] == "waiting_captcha") {
+            val captcha = captchaPayload(challengeId)
+            result["captcha_image"] = "data:image/png;base64,${captcha.first}"
+            result["captcha_purpose"] = captcha.second
+        }
         if (state["status"] == "failed") {
             result["error"] = (state["error"] as? String ?: "").ifBlank { "authentication failed" }
         }
         if (includeAccessToken) result["access_token"] = accessToken
         return result
+    }
+
+    suspend fun waitForCaptcha(challengeId: String, image: ByteArray, context: CaptchaContext): String {
+        val now = System.currentTimeMillis() / 1000.0
+        val encodedImage = Base64.getEncoder().encodeToString(image)
+        withContext(kotlinx.coroutines.Dispatchers.IO) {
+            transaction(true) { conn ->
+                conn.prepareStatement(
+                    "INSERT INTO auth_captcha_codes (challenge_id, image_base64, purpose, code, expires_at) VALUES (?, ?, ?, '', ?) " +
+                        "ON CONFLICT(challenge_id) DO UPDATE SET image_base64 = excluded.image_base64, purpose = excluded.purpose, code = '', expires_at = excluded.expires_at"
+                ).use { stmt ->
+                    stmt.setString(1, challengeId)
+                    stmt.setString(2, encodedImage)
+                    stmt.setString(3, context.purpose)
+                    stmt.setDouble(4, now + pendingTtl)
+                    stmt.executeUpdate()
+                }
+                updateChallengeInTransaction(conn, challengeId, mapOf(
+                    "status" to "waiting_captcha",
+                    "expires_at" to (now + pendingTtl),
+                ))
+            }
+        }
+        val deadline = System.nanoTime() / 1e9 + pendingTtl
+        while (System.nanoTime() / 1e9 < deadline) {
+            val code = withContext(kotlinx.coroutines.Dispatchers.IO) { takeCaptchaCode(challengeId) }
+            if (code != null) {
+                withContext(kotlinx.coroutines.Dispatchers.IO) { updateChallenge(challengeId, mapOf("status" to "processing")) }
+                return code
+            }
+            val status = withContext(kotlinx.coroutines.Dispatchers.IO) { state(challengeId)["status"] as? String ?: "" }
+            if (status in setOf("cancelled", "expired", "failed")) throw ChallengeError("challenge is $status")
+            delay(pollIntervalMs)
+        }
+        fail(challengeId, ChallengeError("captcha challenge expired"), "expired")
+        throw ChallengeError("captcha challenge expired")
+    }
+
+    suspend fun submitCaptcha(challengeId: String, accessToken: String, code: String) = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val trimmed = code.trim()
+        if (!Regex("\\S{1,16}").matches(trimmed)) throw ChallengeError("captcha code must contain 1 to 16 non-whitespace characters")
+        authenticate(challengeId, accessToken)
+        val now = System.currentTimeMillis() / 1000.0
+        transaction(true) { conn ->
+            conn.prepareStatement("SELECT status FROM auth_challenges WHERE challenge_id = ?").use { stmt ->
+                stmt.setString(1, challengeId)
+                val rs = stmt.executeQuery()
+                if (!rs.next()) throw ChallengeError("unknown or expired authentication challenge")
+                if (rs.getString("status") != "waiting_captcha") throw ChallengeError("challenge is not waiting for a captcha code")
+            }
+            val updated = conn.prepareStatement(
+                "UPDATE auth_captcha_codes SET code = ?, expires_at = ? WHERE challenge_id = ? AND code = ''"
+            ).use { stmt ->
+                stmt.setString(1, trimmed)
+                stmt.setDouble(2, now + pendingTtl)
+                stmt.setString(3, challengeId)
+                stmt.executeUpdate()
+            }
+            if (updated != 1) throw ChallengeError("a captcha code has already been submitted")
+            updateChallengeInTransaction(conn, challengeId, mapOf(
+                "status" to "processing",
+                "expires_at" to (now + pendingTtl),
+            ))
+        }
     }
 
     suspend fun waitForSms(challengeId: String, context: SmsCodeContext): String {
@@ -285,6 +355,10 @@ class ChallengeStore(
                 stmt.setDouble(1, now)
                 stmt.executeUpdate()
             }
+            conn.prepareStatement("DELETE FROM auth_captcha_codes WHERE expires_at <= ?").use { stmt ->
+                stmt.setDouble(1, now)
+                stmt.executeUpdate()
+            }
             conn.prepareStatement("DELETE FROM auth_service_sessions WHERE expires_at <= ?").use { stmt ->
                 stmt.setDouble(1, now)
                 stmt.executeUpdate()
@@ -297,7 +371,7 @@ class ChallengeStore(
         val deadline = System.nanoTime() / 1e9 + timeoutMs / 1000.0
         while (System.nanoTime() / 1e9 < deadline) {
             val status = authenticate(challengeId, accessToken)["status"] as? String ?: ""
-            if (status in setOf("waiting_sms", "authenticated", "failed", "expired")) return
+            if (status in setOf("waiting_captcha", "waiting_sms", "authenticated", "failed", "expired")) return
             delay(minOf(pollIntervalMs, maxOf(0.0, (deadline - System.nanoTime() / 1e9) * 1000).toLong()))
         }
     }
@@ -325,6 +399,15 @@ class ChallengeStore(
                 """)
                 stmt.execute("CREATE INDEX IF NOT EXISTS idx_auth_challenges_expires ON auth_challenges(expires_at)")
                 stmt.execute("""
+                    CREATE TABLE IF NOT EXISTS auth_captcha_codes (
+                        challenge_id TEXT PRIMARY KEY REFERENCES auth_challenges(challenge_id) ON DELETE CASCADE,
+                        image_base64 TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        code TEXT NOT NULL,
+                        expires_at REAL NOT NULL
+                    )
+                """)
+                stmt.execute("""
                     CREATE TABLE IF NOT EXISTS auth_sms_codes (
                         challenge_id TEXT PRIMARY KEY REFERENCES auth_challenges(challenge_id) ON DELETE CASCADE,
                         code TEXT NOT NULL,
@@ -350,6 +433,7 @@ class ChallengeStore(
                 buildSet { while (rs.next()) add(rs.getString("name")) }
             }
         }
+        val captchaColumns = columns("auth_captcha_codes")
         val smsColumns = columns("auth_sms_codes")
         val sessionColumns = columns("auth_service_sessions")
         val challengeColumns = columns("auth_challenges")
@@ -363,7 +447,7 @@ class ChallengeStore(
             }
             return
         }
-        if (challengeColumns.isNotEmpty() && (smsColumns.isEmpty() || sessionColumns.isEmpty())) {
+        if (challengeColumns.isNotEmpty() && (captchaColumns.isEmpty() || smsColumns.isEmpty() || sessionColumns.isEmpty())) {
             conn.createStatement().use { it.execute("DELETE FROM auth_challenges") }
         }
         if (challengeColumns.isNotEmpty() && "subject" !in challengeColumns) {
@@ -448,20 +532,66 @@ class ChallengeStore(
         val allowed = setOf("status", "masked_phone", "sms_purpose", "error", "expires_at")
         require(fields.isNotEmpty() && fields.keys.all { it in allowed }) { "invalid challenge update" }
         val assignments = fields.keys.joinToString(", ") { "$it = ?" }
-        transaction(true) { conn ->
-            val updated = conn.prepareStatement("UPDATE auth_challenges SET $assignments WHERE challenge_id = ?").use { stmt ->
-                fields.values.forEachIndexed { i, v ->
-                    when (v) {
-                        is Number -> stmt.setDouble(i + 1, v.toDouble())
-                        is String -> stmt.setString(i + 1, v)
-                        else -> stmt.setString(i + 1, v?.toString() ?: "")
-                    }
+        transaction(true) { conn -> updateChallengeInTransaction(conn, challengeId, fields, assignments) }
+    }
+
+    private fun updateChallengeInTransaction(
+        conn: Connection,
+        challengeId: String,
+        fields: Map<String, Any?>,
+        assignments: String = fields.keys.joinToString(", ") { "$it = ?" },
+    ) {
+        val allowed = setOf("status", "masked_phone", "sms_purpose", "error", "expires_at")
+        require(fields.isNotEmpty() && fields.keys.all { it in allowed }) { "invalid challenge update" }
+        val updated = conn.prepareStatement("UPDATE auth_challenges SET $assignments WHERE challenge_id = ?").use { stmt ->
+            fields.values.forEachIndexed { i, v ->
+                when (v) {
+                    is Number -> stmt.setDouble(i + 1, v.toDouble())
+                    is String -> stmt.setString(i + 1, v)
+                    else -> stmt.setString(i + 1, v?.toString() ?: "")
                 }
-                stmt.setString(fields.size + 1, challengeId)
-                stmt.executeUpdate()
             }
-            if (updated != 1) throw ChallengeError("unknown or expired authentication challenge")
+            stmt.setString(fields.size + 1, challengeId)
+            stmt.executeUpdate()
         }
+        if (updated != 1) throw ChallengeError("unknown or expired authentication challenge")
+    }
+
+    private fun captchaPayload(challengeId: String): Pair<String, String> {
+        var payload: Pair<String, String>? = null
+        connection { conn ->
+            conn.prepareStatement(
+                "SELECT image_base64, purpose FROM auth_captcha_codes WHERE challenge_id = ? AND expires_at > ?"
+            ).use { stmt ->
+                stmt.setString(1, challengeId)
+                stmt.setDouble(2, System.currentTimeMillis() / 1000.0)
+                val rs = stmt.executeQuery()
+                if (rs.next()) payload = rs.getString("image_base64") to rs.getString("purpose")
+            }
+        }
+        return payload ?: throw ChallengeError("captcha challenge is unavailable")
+    }
+
+    private fun takeCaptchaCode(challengeId: String): String? {
+        var code: String? = null
+        val now = System.currentTimeMillis() / 1000.0
+        transaction(true) { conn ->
+            conn.prepareStatement(
+                "SELECT code FROM auth_captcha_codes WHERE challenge_id = ? AND expires_at > ? AND code != ''"
+            ).use { stmt ->
+                stmt.setString(1, challengeId)
+                stmt.setDouble(2, now)
+                val rs = stmt.executeQuery()
+                if (rs.next()) code = rs.getString("code")
+            }
+            if (code != null) {
+                conn.prepareStatement("DELETE FROM auth_captcha_codes WHERE challenge_id = ?").use { stmt ->
+                    stmt.setString(1, challengeId)
+                    stmt.executeUpdate()
+                }
+            }
+        }
+        return code
     }
 
     private fun takeSmsCode(challengeId: String): String? {

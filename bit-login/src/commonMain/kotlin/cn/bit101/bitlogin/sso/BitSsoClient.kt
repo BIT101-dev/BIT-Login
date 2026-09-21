@@ -73,7 +73,7 @@ class BitSsoClient(
         trustDevice: Boolean = false,
         followRedirects: Boolean = true,
     ): SsoLoginResult {
-        require(username.isNotBlank() && password.isNotEmpty()) { "username and password must not be empty" }
+        require(username.isNotBlank()) { "username must not be empty" }
         val cleanUsername = username.trim()
         require(cleanUsername.isNotEmpty()) { "username must not contain only whitespace" }
         lastRiskMode = "not-required"
@@ -97,6 +97,7 @@ class BitSsoClient(
                     "contentType=${loaded.headers["Content-Type"] ?: "?"}, preview: $preview)"
             )
         }
+        require(password.isNotEmpty()) { "password must not be empty" }
         loginReferer = loaded.url
         lastExecution = page.execution
 
@@ -139,6 +140,7 @@ class BitSsoClient(
         smsCodeCallback: SmsCodeCallback,
         captchaSolver: CaptchaSolver? = null,
         service: String? = null,
+        followRedirects: Boolean = true,
     ): SsoLoginResult {
         if (!PHONE_PATTERN.matches(phone)) {
             throw ConfigurationError("phone must be an 11-digit mainland China mobile number")
@@ -192,7 +194,7 @@ class BitSsoClient(
         form["captcha_code"] = ""
         form["password"] = code
         addRiskFields(form, page, "smsLogin", phone)
-        val response = loginPost(page.formAction, form, followRedirects = true)
+        val response = loginPost(page.formAction, form, followRedirects = followRedirects)
         return loginResult(response, "短信验证码错误或已失效，请重新发起登录")
     }
 

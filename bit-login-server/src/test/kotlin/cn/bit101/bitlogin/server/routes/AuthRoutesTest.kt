@@ -55,6 +55,26 @@ class AuthRoutesTest {
     }
 
     @Test
+    fun `SMS start requires a valid phone`() = testApplication {
+        application { mainModule(config()) }
+        val response = client.post("/api/auth/start") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"username":"u","auth_method":"sms","phone":"123","services":["jwb"],"wait_seconds":0.0}""")
+        }
+        assertEquals(HttpStatusCode.UnprocessableEntity, response.status)
+    }
+
+    @Test
+    fun `start rejects an unknown authentication method`() = testApplication {
+        application { mainModule(config()) }
+        val response = client.post("/api/auth/start") {
+            contentType(ContentType.Application.Json)
+            setBody("""{"username":"u","auth_method":"magic","services":["jwb"],"wait_seconds":0.0}""")
+        }
+        assertEquals(HttpStatusCode.UnprocessableEntity, response.status)
+    }
+
+    @Test
     fun `status with unknown challenge returns 404`() = testApplication {
         application { mainModule(config()) }
         val response = client.get("/api/auth/nonexistent") {
