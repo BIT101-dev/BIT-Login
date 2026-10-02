@@ -21,6 +21,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import cn.bit101.bitlogin.http.HttpClient
+import cn.bit101.bitlogin.server.util.redactSensitive
 import cn.bit101.bitlogin.sso.CaptchaContext
 import cn.bit101.bitlogin.sso.SmsCodeContext
 
@@ -74,11 +75,6 @@ class ChallengeStore(
             pendingTtl = (map["AUTH_CHALLENGE_TTL"] ?: "300").toIntOrNull() ?: 300,
             readyTtl = (map["AUTH_SESSION_TTL"] ?: "1800").toIntOrNull() ?: 1800,
         )
-
-        private val SENSITIVE_ERROR = Regex(
-            """(?i)(\b(?:access[_-]?token|response[_-]?token|ticket|cas|sms[_-]?code|password|passwd)\b\s*[=:]\s*)([^\s&,;\])}]+)"""
-        )
-        private val BEARER_TOKEN = Regex("""(?i)(\bBearer\s+)[A-Za-z0-9._~+/=-]+""")
     }
 
     suspend fun create(services: List<String>, subject: String = ""): ChallengeHandle = withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -649,9 +645,7 @@ class ChallengeStore(
     } catch (_: Exception) { emptyList() }
 
     private fun safeError(error: Throwable): String {
-        var value = error.message?.ifBlank { error::class.simpleName } ?: error::class.simpleName.orEmpty()
-        value = SENSITIVE_ERROR.replace(value, "$1[redacted]")
-        value = BEARER_TOKEN.replace(value, "$1[redacted]")
-        return value.take(500)
+        val value = error.message?.ifBlank { error::class.simpleName } ?: error::class.simpleName.orEmpty()
+        return redactSensitive(value).take(500)
     }
 }

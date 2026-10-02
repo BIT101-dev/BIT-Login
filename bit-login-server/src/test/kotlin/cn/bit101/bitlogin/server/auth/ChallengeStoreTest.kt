@@ -142,6 +142,22 @@ class ChallengeStoreTest {
     }
 
     @Test
+    fun `safe error redacts phone and captcha in upstream url`() = runBlocking {
+        val store = newStore()
+        val handle = store.create(listOf("jwb"))
+        store.fail(
+            handle.challengeId,
+            RuntimeException(
+                "HTTP 500 from https://sso.bit.edu.cn/gate/sso-extend/protected/api/aggregate/sms/publicNoToken/sendCheckCaptcha/DEFAULT/a7B2/13800138000/0008"
+            ),
+        )
+        val error = store.snapshot(handle.challengeId, handle.accessToken)["error"] as? String ?: ""
+        assertFalse(error.contains("13800138000"), "phone should be redacted: $error")
+        assertFalse(error.contains("a7B2"), "captcha should be redacted: $error")
+        assertTrue(error.contains("[redacted-url]"), error)
+    }
+
+    @Test
     fun `snapshot for waiting_sms includes masked phone`() = runBlocking {
         val store = newStore()
         val handle = store.create(listOf("jwb"))
