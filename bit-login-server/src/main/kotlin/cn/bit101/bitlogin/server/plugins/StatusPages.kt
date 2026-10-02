@@ -12,6 +12,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.slf4j.LoggerFactory
 import cn.bit101.bitlogin.login.LoginError
+import cn.bit101.bitlogin.server.util.redactPii
+import cn.bit101.bitlogin.server.util.redactSensitive
 
 private val log = LoggerFactory.getLogger("bit-login-server.StatusPages")
 
@@ -20,8 +22,9 @@ class HttpException(val status: Int, message: String, val jsonBody: JsonElement?
 fun Application.configureStatusPages() {
     install(StatusPages) {
         exception<LoginError> { call, cause ->
-            log.warn("Login failed: ${cause.message}")
-            call.respond(HttpStatusCode.Unauthorized, errorBody("Login failed: ${cause.message}"))
+            val message = redactPii(cause.message ?: "Login failed")
+            log.warn("Login failed: $message")
+            call.respond(HttpStatusCode.Unauthorized, errorBody("Login failed: $message"))
         }
         exception<HttpException> { call, cause ->
             val code = HttpStatusCode.fromValue(cause.status)
@@ -39,8 +42,9 @@ fun Application.configureStatusPages() {
             call.respond(HttpStatusCode.UnprocessableEntity, errorBody(cause.message ?: "Malformed JSON"))
         }
         exception<Throwable> { call, cause ->
-            log.error("Unhandled error", cause)
-            call.respond(HttpStatusCode.InternalServerError, errorBody(cause.message ?: "Internal server error"))
+            val detail = redactSensitive(cause.message ?: "Internal server error")
+            log.error("Unhandled error: {}", redactSensitive(cause.stackTraceToString()))
+            call.respond(HttpStatusCode.InternalServerError, errorBody(detail))
         }
     }
 }
