@@ -1,17 +1,11 @@
 package cn.bit101.bitlogin.server.service
 
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 import cn.bit101.bitlogin.http.HttpClient
 import cn.bit101.bitlogin.server.auth.AuthWorker
 import cn.bit101.bitlogin.server.auth.ChallengeError
 import cn.bit101.bitlogin.server.auth.ChallengeStore
 import cn.bit101.bitlogin.server.plugins.HttpException
+import cn.bit101.bitlogin.server.util.toJsonElement
 import cn.bit101.bitlogin.service.BaseLogin
 
 /**
@@ -77,7 +71,7 @@ class AuthServiceExecutor(
         challengeStore.waitUntilActionable(handle.challengeId, handle.accessToken, 1_000)
         val snapshot = challengeStore.snapshot(handle.challengeId, handle.accessToken, includeAccessToken = true)
         if (snapshot["status"] != "authenticated") {
-            throw HttpException(202, "pending", jsonBody = mapToJsonElement(snapshot))
+            throw HttpException(202, "pending", jsonBody = snapshot.toJsonElement())
         }
         return try {
             challengeStore.getSession(handle.challengeId, handle.accessToken, serviceName)
@@ -93,19 +87,5 @@ class AuthServiceExecutor(
         val token = header.substring(7).trim()
         if (token.isEmpty()) throw HttpException(401, "Bearer challenge token required")
         return token
-    }
-}
-
-/** Shared Map→JsonObject conversion for snapshot serialization. */
-internal fun mapToJsonElement(map: Map<String, Any?>): JsonObject = buildJsonObject {
-    map.forEach { (k, v) ->
-        when (v) {
-            is String -> put(k, v)
-            is Number -> put(k, JsonPrimitive(v))
-            is Boolean -> put(k, v)
-            is List<*> -> put(k, JsonArray(v.mapNotNull { it?.let { JsonPrimitive(it.toString()) } }))
-            null -> put(k, JsonNull)
-            else -> put(k, v.toString())
-        }
     }
 }
