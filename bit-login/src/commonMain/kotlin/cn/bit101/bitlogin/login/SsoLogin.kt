@@ -1,6 +1,5 @@
 package cn.bit101.bitlogin.login
 
-import cn.bit101.bitlogin.Config
 import cn.bit101.bitlogin.http.HttpClient
 import cn.bit101.bitlogin.http.HttpResponse
 import cn.bit101.bitlogin.sso.BitSsoClient
@@ -127,5 +126,3 @@ class SsoLogin(
         const val SSO_BASE = "https://sso.bit.edu.cn"
     }
 }
-
-internal val HttpResponse.isOk get() = status == 200

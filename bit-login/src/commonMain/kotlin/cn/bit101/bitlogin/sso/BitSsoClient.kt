@@ -15,6 +15,7 @@ import cn.bit101.bitlogin.http.HttpResponse
 import cn.bit101.bitlogin.util.PythonUrlEncoding
 import cn.bit101.bitlogin.util.base64Decode
 import cn.bit101.bitlogin.util.currentTimeMillis
+import cn.bit101.bitlogin.util.toJsonElement
 import cn.bit101.bitlogin.util.uriHost
 import cn.bit101.bitlogin.util.uriPath
 import cn.bit101.bitlogin.util.uriQuery
@@ -107,7 +108,7 @@ class BitSsoClient(
         val captchaData = responseData(captchaInfo)
         if (jsonTruthy(captchaData?.get("captchaInvisible"))) {
             lastCaptchaRequired = true
-            val captchaUrl = captchaData!!["captchaUrl"]?.jsonPrimitive?.contentOrNullSafe().orEmpty()
+            val captchaUrl = captchaData!!["captchaUrl"]?.jsonPrimitive?.content.orEmpty()
             if (captchaUrl.isEmpty()) throw CaptchaError("the server required a captcha but supplied no image URL")
             val solver = captchaSolver ?: this.captchaSolver
             captchaCode = solveCaptcha(
@@ -321,9 +322,9 @@ class BitSsoClient(
     }
 
     private fun riskResponseToken(json: JsonObject): String {
-        json["responsetoken"]?.jsonPrimitive?.contentOrNullSafe()?.takeIf { it.isNotBlank() }?.let { return it }
+        json["responsetoken"]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }?.let { return it }
         val data = json["data"] as? JsonObject
-        return data?.get("responsetoken")?.jsonPrimitive?.contentOrNullSafe().orEmpty()
+        return data?.get("responsetoken")?.jsonPrimitive?.content.orEmpty()
     }
 
     private suspend fun ensureDeviceCookie(): String {
@@ -469,12 +470,12 @@ class BitSsoClient(
 
     private fun responseMessage(json: JsonObject): String {
         for (key in listOf("message", "msg", "errorMessage")) {
-            json[key]?.jsonPrimitive?.contentOrNullSafe()?.takeIf { it.isNotBlank() }?.let { return it }
+            json[key]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }?.let { return it }
         }
         val data = json["data"] as? JsonObject
         if (data != null) {
             for (key in listOf("message", "msg", "errorMessage")) {
-                data[key]?.jsonPrimitive?.contentOrNullSafe()?.takeIf { it.isNotBlank() }?.let { return it }
+                data[key]?.jsonPrimitive?.content?.takeIf { it.isNotBlank() }?.let { return it }
             }
         }
         return ""
@@ -485,7 +486,7 @@ class BitSsoClient(
     private fun responseCode(json: JsonObject): Int? = json["code"]?.jsonPrimitive?.intOrNull
 
     private fun extractString(value: JsonObject?, key: String): String =
-        value?.get(key)?.jsonPrimitive?.contentOrNullSafe().orEmpty()
+        value?.get(key)?.jsonPrimitive?.content.orEmpty()
 
     private fun smsCodeRemainsValid(json: JsonObject): Boolean {
         val msg = responseMessage(json)
@@ -529,23 +530,6 @@ private fun jsonTruthy(element: JsonElement?): Boolean = when (element) {
     }
     is JsonObject -> element.isNotEmpty()
     is JsonArray -> element.isNotEmpty()
-}
-
-private fun JsonPrimitive.contentOrNullSafe(): String? = content
-
-private fun Map<String, Any?>.toJsonElement(): JsonElement = JsonObject(entries.associate { (k, v) ->
-    k to v.toJsonElement()
-})
-
-private fun Any?.toJsonElement(): JsonElement = when (this) {
-    null -> JsonNull
-    is JsonElement -> this
-    is Number -> JsonPrimitive(this)
-    is Boolean -> JsonPrimitive(this)
-    is String -> JsonPrimitive(this)
-    is Map<*, *> -> JsonObject(entries.associate { (key, value) -> key.toString() to value.toJsonElement() })
-    is Iterable<*> -> JsonArray(map { it.toJsonElement() })
-    else -> JsonPrimitive(toString())
 }
 
 private class HttpClientTransport(private val client: HttpClient) : SsoTransport {

@@ -10,11 +10,10 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import cn.bit101.bitlogin.server.auth.AuthServices
 import cn.bit101.bitlogin.server.auth.AuthWorker
 import cn.bit101.bitlogin.server.auth.ChallengeError
 import cn.bit101.bitlogin.server.auth.ChallengeStore
@@ -26,22 +25,10 @@ import cn.bit101.bitlogin.server.model.CaptchaCodeRequest
 import cn.bit101.bitlogin.server.model.RegistrationTokenRequest
 import cn.bit101.bitlogin.server.model.SmsCodeRequest
 import cn.bit101.bitlogin.server.plugins.HttpException
+import cn.bit101.bitlogin.server.util.toJsonElement
 
-private fun Map<String, Any?>.toJsonObject(): JsonObject = buildJsonObject {
-    forEach { (k, v) ->
-        when (v) {
-            is String -> put(k, v)
-            is Number -> put(k, JsonPrimitive(v))
-            is Boolean -> put(k, v)
-            is List<*> -> put(k, JsonArray(v.mapNotNull { it?.let { JsonPrimitive(it.toString()) } }))
-            null -> put(k, JsonNull)
-            else -> put(k, v.toString())
-        }
-    }
-}
-
-private suspend fun challengeOrHttp(store: ChallengeStore, challengeId: String, token: String?) {
-    try {
+private suspend fun challengeOrHttp(store: ChallengeStore, challengeId: String, token: String?): Map<String, Any?> {
+    return try {
         store.authenticate(challengeId, token ?: "")
     } catch (e: ChallengeError) {
         val status = if (e.message?.contains("access token") == true) 403 else 404
@@ -91,7 +78,7 @@ fun Route.authRoutes(worker: AuthWorker, store: ChallengeStore) {
             store.waitUntilActionable(handle.challengeId, handle.accessToken, waitMs)
             call.respond(
                 HttpStatusCode.Accepted,
-                store.snapshot(handle.challengeId, handle.accessToken, includeAccessToken = true).toJsonObject()
+                store.snapshot(handle.challengeId, handle.accessToken, includeAccessToken = true).toJsonElement()
             )
         }
 
@@ -99,7 +86,7 @@ fun Route.authRoutes(worker: AuthWorker, store: ChallengeStore) {
             val challengeId = call.parameters["challengeId"]!!
             val token = call.request.headers["X-Challenge-Token"]
             challengeOrHttp(store, challengeId, token)
-            call.respond(store.snapshot(challengeId, token ?: "").toJsonObject())
+            call.respond(store.snapshot(challengeId, token ?: "").toJsonElement())
         }
 
         post("/{challengeId}/sms") {
@@ -113,7 +100,7 @@ fun Route.authRoutes(worker: AuthWorker, store: ChallengeStore) {
                 throw HttpException(409, e.message ?: "SMS error")
             }
             store.waitUntilActionable(challengeId, token ?: "", 1000)
-            call.respond(store.snapshot(challengeId, token ?: "").toJsonObject())
+            call.respond(store.snapshot(challengeId, token ?: "").toJsonElement())
         }
 
         post("/{challengeId}/captcha") {
@@ -127,7 +114,7 @@ fun Route.authRoutes(worker: AuthWorker, store: ChallengeStore) {
                 throw HttpException(409, e.message ?: "captcha error")
             }
             store.waitUntilActionable(challengeId, token ?: "", 1000)
-            call.respond(store.snapshot(challengeId, token ?: "").toJsonObject())
+            call.respond(store.snapshot(challengeId, token ?: "").toJsonElement())
         }
 
         get("/{challengeId}/services/{service}") {
@@ -151,12 +138,7 @@ fun Route.authRoutes(worker: AuthWorker, store: ChallengeStore) {
             val challengeId = call.parameters["challengeId"]!!
             val token = call.request.headers["X-Challenge-Token"]
             val req = call.receive<RegistrationTokenRequest>()
-            val state = try {
-                store.authenticate(challengeId, token ?: "")
-            } catch (e: ChallengeError) {
-                val status = if (e.message?.contains("access token") == true) 403 else 404
-                throw HttpException(status, e.message ?: "unknown error")
-            }
+            val state = challengeOrHttp(store, challengeId, token)
             if (state["status"] != "authenticated")
                 throw HttpException(409, "challenge is ${state["status"]}")
             try {
@@ -184,6 +166,4 @@ fun Route.authRoutes(worker: AuthWorker, store: ChallengeStore) {
     }
 }
 
-private val AuthServicesList = listOf(
-    "webvpn", "jwb", "jwb_cjd", "jxzxehall", "ibit", "yanhekt", "library", "dekt", "cxcy"
-).sorted()
+private val AuthServicesList = AuthServices.names.sorted()
