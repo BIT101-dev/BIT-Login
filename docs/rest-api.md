@@ -16,6 +16,7 @@
 | `GET` | `/` | 服务健康检查。 |
 | `POST` | `/api/auth/start` | 创建认证 challenge。 |
 | `GET` | `/api/auth/{challenge_id}` | 查询 challenge 状态。 |
+| `POST` | `/api/auth/{challenge_id}/captcha` | 提交图形验证码。 |
 | `POST` | `/api/auth/{challenge_id}/sms` | 提交短信验证码。 |
 | `GET` | `/api/auth/{challenge_id}/services/{service}` | 获取已完成服务的登录结果。 |
 | `POST` | `/api/auth/{challenge_id}/registration-token` | 签发注册 JWT。 |
@@ -69,8 +70,8 @@
 | `401` | 登录失败，或 Authorization header 不是有效的 Bearer 形式。 |
 | `403` | challenge token 无效，或下载路径不是 `.ics`。 |
 | `404` | challenge、服务名或 ICS 文件不存在。 |
-| `409` | challenge 尚未认证、服务尚未就绪、SMS 状态冲突。 |
-| `422` | JSON 无法转换、请求参数非法、教学中心数据不可用。 |
+| `409` | challenge 尚未认证、服务尚未就绪、图形验证码或 SMS 状态冲突。 |
+| `422` | JSON 无法转换、请求参数非法（`auth_method`、`phone`、`wait_seconds` 等）、教学中心数据不可用。 |
 | `500` | 未处理的上游或服务内部错误。 |
 | `503` | 注册 JWT 服务未配置。 |
 
@@ -87,7 +88,7 @@
 服务端会创建后台认证任务，最多等待 1 秒：
 
 - 已完成认证时，继续执行目标业务接口并返回 `200`。
-- 未完成或等待短信时，返回 `202`，`detail` 是含有 `challenge_id` 与 `access_token` 的挑战快照。
+- 未完成、等待图形验证码或短信时，返回 `202`，`detail` 是含有 `challenge_id` 与 `access_token` 的挑战快照。
 - 收到 `202` 后必须走下方挑战流程，不应反复提交密码请求。
 
 ### Bearer challenge 模式
@@ -117,17 +118,19 @@ Content-Type: application/json
 {
   "challenge_id": "string",
   "access_token": "string，仅创建响应和 202 响应提供",
-  "status": "running | waiting_sms | processing | authenticated | failed | expired",
+  "status": "running | waiting_captcha | waiting_sms | processing | authenticated | failed | expired | cancelled",
   "requested_services": ["jwb"],
   "ready_services": ["jwb"],
   "expires_in": 300,
+  "captcha_image": "data:image/png;base64,...，仅 waiting_captcha",
+  "captcha_purpose": "password | sms，仅 waiting_captcha",
   "masked_phone": "138****8000，仅 waiting_sms",
-  "sms_purpose": "password_second_factor，仅 waiting_sms",
+  "sms_purpose": "phone_primary_login | password_second_factor，仅 waiting_sms",
   "error": "安全脱敏后的失败原因，仅 failed"
 }
 ```
 
-`expires_in` 是剩余秒数。会话认证完成后，默认有效期为 1800 秒；等待状态默认有效期为 300 秒，可通过服务端环境变量调整。
+`expires_in` 是剩余秒数。会话认证完成后，默认有效期为 1800 秒；等待状态（`waiting_captcha`、`waiting_sms`）默认有效期为 300 秒，可通过服务端环境变量调整。`failed`、`expired`、`cancelled` 为终态。
 
 ### `POST /api/auth/start`
 
@@ -139,6 +142,8 @@ Content-Type: application/json
 {
   "username": "1120230000",
   "password": "secret",
+  "auth_method": "password",
+  "phone": "13800138000",
   "services": ["jwb", "jxzxehall"],
   "wait_seconds": 1.0
 }
@@ -147,11 +152,15 @@ Content-Type: application/json
 | 字段 | 必填 | 规则 |
 |---|---|---|
 | `username` | 是 | 学号或统一认证账号。 |
-| `password` | 是 | 统一认证密码。 |
+| `password` | 条件 | `auth_method=password`（默认）时必填；空字符串视为缺失。 |
+| `auth_method` | 否 | 默认 `password`；可选 `password` 或 `sms`。`sms` 为手机号短信登录，此时忽略 `password`。 |
+| `phone` | 条件 | `auth_method=sms` 时必填；大陆 11 位手机号（`^1[0-9]{10}$`），须为统一身份认证已绑定号码。 |
 | `services` | 否 | 默认 `['jwb']`；会去重。可选：`cxcy`、`dekt`、`ibit`、`jwb`、`jwb_cjd`、`jxzxehall`、`library`、`webvpn`、`yanhekt`。 |
 | `wait_seconds` | 否 | 默认 `1.0`；范围 `0` 至 `5` 秒。 |
 
-响应：`202 Accepted`，返回包含 `access_token` 的挑战快照。
+`auth_method` 不是 `password`/`sms`、`auth_method=sms` 而 `phone` 不合法、`wait_seconds` 越界或 `username` 为空时返回 `422`。
+
+响应：`202 Accepted`，返回包含 `access_token` 的挑战快照（`status` 可能为 `running`、`waiting_captcha`、`waiting_sms`，或已直接 `authenticated`）。
 
 ### `GET /api/auth/{challenge_id}`
 
@@ -161,9 +170,25 @@ Content-Type: application/json
 
 响应：`200 OK`，返回不包含 `access_token` 的挑战快照。
 
+### `POST /api/auth/{challenge_id}/captcha`
+
+提交图形验证码，仅状态为 `waiting_captcha` 时可提交一次。验证码图片以 `data:image/png;base64,...` 形式通过挑战快照的 `captcha_image` 返回，`captcha_purpose` 标明来源（`password` 密码登录或 `sms` 短信登录）。
+
+请求头：`X-Challenge-Token: <access_token>`。
+
+请求：
+
+```json
+{"code":"a1b2"}
+```
+
+`code` 去除首尾空白后必须是 1 至 16 个非空白字符。
+
+响应：`200 OK`，等待最多 1 秒后返回最新挑战快照。无效验证码格式、非等待状态或重复提交返回 `409`。
+
 ### `POST /api/auth/{challenge_id}/sms`
 
-提交短信验证码，仅状态为 `waiting_sms` 时可提交一次。
+提交短信验证码，仅状态为 `waiting_sms` 时可提交一次。`sms_purpose=phone_primary_login` 表示短信登录的主验证码；`sms_purpose=password_second_factor` 表示密码登录后的二次验证。
 
 请求头：`X-Challenge-Token: <access_token>`。
 
@@ -430,7 +455,7 @@ Content-Type: application/json
 {"detail":"Forbidden"}
 ```
 
-## 完整短信认证示例
+## 完整认证示例（密码 / 短信）
 
 ```bash
 BASE_URL="http://localhost:16384"
@@ -439,7 +464,14 @@ START=$(curl -sS -X POST "$BASE_URL/api/auth/start" \
   -H "Content-Type: application/json" \
   -d '{"username":"1120230000","password":"secret","services":["jwb"]}')
 
-# 从 START 读取 challenge_id 和 access_token；若 status 为 waiting_sms，提交短信码。
+# 从 START 读取 challenge_id 和 access_token。
+# 若 status 为 waiting_captcha，提交图形验证码：
+curl -sS -X POST "$BASE_URL/api/auth/<challenge_id>/captcha" \
+  -H "Content-Type: application/json" \
+  -H "X-Challenge-Token: <access_token>" \
+  -d '{"code":"a1b2"}'
+
+# 若 status 为 waiting_sms，提交短信验证码：
 curl -sS -X POST "$BASE_URL/api/auth/<challenge_id>/sms" \
   -H "Content-Type: application/json" \
   -H "X-Challenge-Token: <access_token>" \
@@ -452,7 +484,15 @@ curl -sS -X POST "$BASE_URL/api/jwb/score" \
   -d '{"challenge_id":"<challenge_id>","detailed":false}'
 ```
 
-若 `/api/auth/start` 直接返回 `authenticated`，不需要 SMS 步骤；仍应使用返回的 `challenge_id` 和 `access_token` 访问已请求的服务。
+若 `/api/auth/start` 直接返回 `authenticated`，不需要验证码步骤；仍应使用返回的 `challenge_id` 和 `access_token` 访问已请求的服务。
+
+如改用短信登录，将 `auth_method` 设为 `sms` 并传入统一身份认证绑定的 `phone`，无需 `password`：
+
+```json
+{"username":"1120230000","auth_method":"sms","phone":"13800138000","services":["jwb"]}
+```
+
+该模式同样通过 `waiting_captcha` / `waiting_sms` / `authenticated` 状态推进。
 
 ## 服务端配置
 

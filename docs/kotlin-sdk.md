@@ -100,6 +100,7 @@ suspend fun login(
 
 - `callbackUrl` 必填，CAS 成功后会带 service ticket 回调到该 URL。
 - `session` 属性是持久化 Cookie 的 `HttpClient`，可传入已有会话，或在构造时注入。
+- 构造函数可选 `primarySmsPhone`：非空时改用手机号短信登录（`loginSms`），忽略传入的 `password`；此时必须提供 `smsCodeCallback`，否则抛 `SmsVerificationError`。
 - `retries` 和 `webvpnMode` 为兼容参数；当前服务登录流程负责网络环境与 WebVPN 会话处理。
 - `LoginResult` 包含 `cookieJson: Map<String, String>`、`cookie: String`、`callback: String` 和可选 `ticket: String?`；`toJson()` 返回前三项的 `JsonObject`。
 

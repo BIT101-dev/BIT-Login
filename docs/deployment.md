@@ -114,6 +114,7 @@ chmod 750 /var/lib/bit-login /etc/bit-login
 ### 表结构
 
 - `auth_challenges` — challenge 状态、服务列表、过期时间
+- `auth_captcha_codes` — 图形验证码图片（base64）、用途与单次消费的验证码
 - `auth_sms_codes` — 短信验证码（单次消费）
 - `auth_service_sessions` — 各服务登录会话序列化结果
 
