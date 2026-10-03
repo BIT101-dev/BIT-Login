@@ -30,6 +30,10 @@ object Config {
             "jxzxehall_auth" to "https://jxzxehall.bit.edu.cn/auth-protocol-core/login?service=https%3A%2F%2Fjxzxehallapp.bit.edu.cn%2Fjwapp%2Fsys%2Fxsfacx%2F*default%2Findex.do",
             "jxzxehall_app_base" to "https://jxzxehallapp.bit.edu.cn/jwapp/sys/xsfacx/*default/index.do",
             "jxzxehall_config" to "https://jxzxehallapp.bit.edu.cn/jwapp/sys/funauthapp/api/getAppConfig/xsfacx-4766859113956613.do?v=08260885168155102",
+            // 研究生(学号31/32)落地应用: wdkbby对本科生与研究生均开放, xsfacx对研究生403
+            "jxzxehall_wdkbby_auth" to "https://jxzxehall.bit.edu.cn/auth-protocol-core/login?service=https%3A%2F%2Fjxzxehallapp.bit.edu.cn%2Fjwapp%2Fsys%2Fwdkbby%2F*default%2Findex.do",
+            "jxzxehall_wdkbby_app_base" to "https://jxzxehallapp.bit.edu.cn/jwapp/sys/wdkbby/*default/index.do",
+            "jxzxehall_wdkbby_config" to "https://jxzxehallapp.bit.edu.cn/jwapp/sys/funauthapp/api/getAppConfig/wdkbby-5959167891382285.do",
             "lib_cas" to "https://seatlib.bit.edu.cn/api/cas/cas",
             "lib_auth" to "https://seatlib.bit.edu.cn/api/cas/user",
             "lib_referer" to "https://seatlib.bit.edu.cn/h5/index.html",
@@ -53,6 +57,10 @@ object Config {
             "jxzxehall_app_base" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421faef5b842238695c720999bcd6572a216b231105adc27d/jwapp/sys/xsfacx/*default/index.do",
             "jxzxehall_course" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421faef5b842238695c720999bcd6572a216b231105adc27d/",
             "jxzxehall_config" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421faef5b842238695c720999bcd6572a216b231105adc27d/jwapp/sys/funauthapp/api/getAppConfig/xsfacx-4766859113956613.do?v=08260885168155102",
+            // 研究生(学号31/32)落地应用: webvpn镜像版
+            "jxzxehall_wdkbby_auth" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421faef5b842238695c72468ba58c1b26316e8e7f6f/auth-protocol-core/login?service=https%3A%2F%2Fjxzxehallapp.bit.edu.cn%2Fjwapp%2Fsys%2Fwdkbby%2F*default%2Findex.do",
+            "jxzxehall_wdkbby_app_base" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421faef5b842238695c720999bcd6572a216b231105adc27d/jwapp/sys/wdkbby/*default/index.do",
+            "jxzxehall_wdkbby_config" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421faef5b842238695c720999bcd6572a216b231105adc27d/jwapp/sys/funauthapp/api/getAppConfig/wdkbby-5959167891382285.do",
             "lib_cas" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421e3f240882b396a1e7c019de29d51367b27a4/api/cas/cas",
             "lib_auth" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421e3f240882b396a1e7c019de29d51367b27a4/api/cas/user",
             "lib_referer" to "https://webvpn.bit.edu.cn/https/77726476706e69737468656265737421e3f240882b396a1e7c019de29d51367b27a4/h5/index.html",

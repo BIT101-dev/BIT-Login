@@ -27,7 +27,7 @@ class ConfigTest {
         assertEquals("https://cbiz.yanhekt.cn/v1/cas/callback", Config.Urls.campus["yanhekt_cb"])
         assertNotNull(Config.Urls.campus["jxzxehall_auth"])
         assertEquals("https://lexue.bit.edu.cn", Config.Urls.campus["lexue"])
-        assertEquals(16, Config.Urls.campus.size)
+        assertEquals(19, Config.Urls.campus.size)
     }
 
     @Test
@@ -35,7 +35,25 @@ class ConfigTest {
         assertEquals("https://webvpn.bit.edu.cn", Config.Urls.webvpn["webvpn_origin"])
         assertEquals("https://webvpn.bit.edu.cn/login?cas_login=true", Config.Urls.webvpn["webvpn_cb"])
         assertNotNull(Config.Urls.webvpn["lexue"])
-        assertEquals(18, Config.Urls.webvpn.size)
+        assertEquals(21, Config.Urls.webvpn.size)
+    }
+
+    @Test
+    fun `Urls wdkbby landing keys mirror xsfacx structure`() {
+        // 研究生落地应用: campus与webvpn两套均需提供 auth/app_base/config 三键
+        for (urls in listOf(Config.Urls.campus, Config.Urls.webvpn)) {
+            val auth = requireNotNull(urls["jxzxehall_wdkbby_auth"])
+            val appBase = requireNotNull(urls["jxzxehall_wdkbby_app_base"])
+            val config = requireNotNull(urls["jxzxehall_wdkbby_config"])
+            assertTrue(auth.endsWith("index.do"))
+            assertTrue(auth.contains("wdkbby"))
+            assertTrue(appBase.endsWith("/jwapp/sys/wdkbby/*default/index.do"))
+            assertTrue(config.contains("wdkbby-5959167891382285"))
+        }
+        assertEquals(
+            "https://jxzxehallapp.bit.edu.cn/jwapp/sys/wdkbby/*default/index.do",
+            Config.Urls.campus["jxzxehall_wdkbby_app_base"],
+        )
     }
 
     @Test
