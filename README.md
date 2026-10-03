@@ -70,7 +70,7 @@ suspend fun demo() {
 
 ## 🔌 RESTful 接口
 
-所有接口均为 `POST`，`Content-Type: application/json`，请求体包含 `username`/`password`。
+业务接口（`/api/jwb/*`、`/api/jxzxehall/*`、`/api/*/cookies`）为 `POST`，`Content-Type: application/json`，请求体包含 `username`/`password` 或 Bearer 模式下的 `challenge_id`；认证挑战接口与 ICS 下载的方法见下方列表。完整字段说明见 [docs/rest-api.md](docs/rest-api.md)。
 
 ### 通用错误响应
 
